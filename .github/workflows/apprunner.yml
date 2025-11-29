@@ -45,7 +45,14 @@ jobs:
           echo "health_timeout=$(yq '.apprunner.health_check.timeout' $CONFIG)" >> $GITHUB_OUTPUT
           echo "health_healthy=$(yq '.apprunner.health_check.healthy_threshold' $CONFIG)" >> $GITHUB_OUTPUT
           echo "health_unhealthy=$(yq '.apprunner.health_check.unhealthy_threshold' $CONFIG)" >> $GITHUB_OUTPUT
-          echo "java_opts=$(yq '.apprunner.java_opts' $CONFIG)" >> $GITHUB_OUTPUT
+
+          # Extract environment variables as JSON
+          ENV_VARS=$(yq -o=json '.apprunner.env // {}' $CONFIG)
+          echo "env_vars=$ENV_VARS" >> $GITHUB_OUTPUT
+
+          # Extract secrets config as JSON
+          SECRETS=$(yq -o=json '.secrets // []' $CONFIG)
+          echo "secrets=$SECRETS" >> $GITHUB_OUTPUT
 
       - name: Create GitHub Deployment
         id: deployment
@@ -93,6 +100,39 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ secrets.AWS_REGION }}
 
+      - name: Resolve secrets ARNs
+        id: secrets
+        env:
+          SECRETS_CONFIG: ${{ steps.config.outputs.secrets }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+        run: |
+          # Parse secrets config and build RuntimeEnvironmentSecrets JSON
+          RUNTIME_SECRETS="{}"
+
+          if [ "$SECRETS_CONFIG" != "[]" ] && [ "$SECRETS_CONFIG" != "null" ]; then
+            for row in $(echo "$SECRETS_CONFIG" | yq -o=json -I=0 '.[]'); do
+              ENV_NAME=$(echo "$row" | yq '.env')
+              SECRET_NAME=$(echo "$row" | yq '.secret')
+              SECRET_KEY=$(echo "$row" | yq '.key')
+
+              # Get the secret ARN from AWS
+              SECRET_ARN=$(aws secretsmanager describe-secret --secret-id "$SECRET_NAME" --query 'ARN' --output text)
+
+              if [ -z "$SECRET_ARN" ] || [ "$SECRET_ARN" == "None" ]; then
+                echo "::error::Secret not found: $SECRET_NAME"
+                exit 1
+              fi
+
+              # Build ARN with key reference: arn:...:secret:name-suffix:KEY::
+              FULL_ARN="${SECRET_ARN}:${SECRET_KEY}::"
+
+              # Add to JSON object
+              RUNTIME_SECRETS=$(echo "$RUNTIME_SECRETS" | yq -o=json ". + {\"$ENV_NAME\": \"$FULL_ARN\"}")
+            done
+          fi
+
+          echo "runtime_secrets=$RUNTIME_SECRETS" >> $GITHUB_OUTPUT
+
       - name: Login to Amazon ECR
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
@@ -135,11 +175,26 @@ jobs:
           HEALTH_TIMEOUT: ${{ steps.config.outputs.health_timeout }}
           HEALTH_HEALTHY: ${{ steps.config.outputs.health_healthy }}
           HEALTH_UNHEALTHY: ${{ steps.config.outputs.health_unhealthy }}
-          JAVA_OPTS: ${{ steps.config.outputs.java_opts }}
+          ENV_VARS: ${{ steps.config.outputs.env_vars }}
+          RUNTIME_SECRETS: ${{ steps.secrets.outputs.runtime_secrets }}
           ECR_ROLE_ARN: ${{ secrets.APP_RUNNER_ECR_ROLE_ARN }}
           INSTANCE_ROLE_ARN: ${{ secrets.APP_RUNNER_INSTANCE_ROLE_ARN }}
-          MONGODB_SECRET_ARN: ${{ secrets.MONGODB_SECRET_ARN }}
         run: |
+          # Build ImageConfiguration
+          IMAGE_CONFIG="{\"Port\": \"$PORT\""
+
+          # Add environment variables if present
+          if [ "$ENV_VARS" != "{}" ] && [ "$ENV_VARS" != "null" ]; then
+            IMAGE_CONFIG="$IMAGE_CONFIG, \"RuntimeEnvironmentVariables\": $ENV_VARS"
+          fi
+
+          # Add secrets if present
+          if [ "$RUNTIME_SECRETS" != "{}" ] && [ "$RUNTIME_SECRETS" != "null" ]; then
+            IMAGE_CONFIG="$IMAGE_CONFIG, \"RuntimeEnvironmentSecrets\": $RUNTIME_SECRETS"
+          fi
+
+          IMAGE_CONFIG="$IMAGE_CONFIG}"
+
           SERVICE_ARN=$(aws apprunner create-service \
             --service-name "$SERVICE_NAME" \
             --source-configuration "{
@@ -147,11 +202,7 @@ jobs:
               \"ImageRepository\": {
                 \"ImageIdentifier\": \"$ECR_REGISTRY/$SERVICE_NAME:latest\",
                 \"ImageRepositoryType\": \"ECR\",
-                \"ImageConfiguration\": {
-                  \"Port\": \"$PORT\",
-                  \"RuntimeEnvironmentVariables\": {\"JAVA_TOOL_OPTIONS\": \"$JAVA_OPTS\"},
-                  \"RuntimeEnvironmentSecrets\": {\"MONGODB_URI\": \"$MONGODB_SECRET_ARN\"}
-                }
+                \"ImageConfiguration\": $IMAGE_CONFIG
               },
               \"AutoDeploymentsEnabled\": false
             }" \
@@ -196,12 +247,15 @@ jobs:
       - name: Create GitHub Release
         if: success()
         uses: actions/github-script@v7
+        env:
+          CHANGELOG: ${{ github.event.client_payload.changelog }}
         with:
           github-token: ${{ secrets.PAT }}
           script: |
             const version = '${{ github.event.client_payload.version }}';
             const tagName = `v${version}`;
             const project = '${{ steps.validate.outputs.project }}';
+            const sha = '${{ github.event.client_payload.sha }}';
 
             // Check if tag already exists
             try {
@@ -216,8 +270,8 @@ jobs:
               // Tag doesn't exist, create release
             }
 
-            const changelog = '${{ github.event.client_payload.changelog }}' || '';
-            const footer = `\n---\n**Tag:** ${tagName}\n**Commit:** ${{ github.event.client_payload.sha }}`.substring(0, 7);
+            const changelog = process.env.CHANGELOG || '';
+            const footer = `\n---\n**Tag:** ${tagName}\n**Commit:** ${sha.substring(0, 7)}`;
             const body = changelog ? changelog + footer : `Deployed to production via AWS App Runner.${footer}`;
 
             await github.rest.repos.createRelease({
@@ -228,5 +282,5 @@ jobs:
               body: body,
               draft: false,
               prerelease: false,
-              target_commitish: '${{ github.event.client_payload.sha }}'
+              target_commitish: sha
             });

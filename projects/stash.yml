@@ -13,7 +13,10 @@ apprunner:
     timeout: 5
     healthy_threshold: 1
     unhealthy_threshold: 5
-  java_opts: "-Xmx256m -XX:+UseG1GC"
+  env:
+    JAVA_TOOL_OPTIONS: "-Xmx256m -XX:+UseG1GC"
 
 secrets:
-  MONGODB_URI: MONGODB_SECRET_ARN
+  - env: MONGODB_URI
+    secret: prod/stash
+    key: MONGODB_URI
