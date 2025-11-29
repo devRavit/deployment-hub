@@ -58,7 +58,7 @@ jobs:
           github-token: ${{ secrets.PAT }}
           script: |
             const deployment = await github.rest.repos.createDeployment({
-              owner: 'devRavit',
+              owner: '${{ github.repository_owner }}',
               repo: '${{ steps.validate.outputs.project }}',
               ref: '${{ github.event.client_payload.sha }}',
               environment: 'production',
@@ -75,7 +75,7 @@ jobs:
           github-token: ${{ secrets.PAT }}
           script: |
             await github.rest.repos.createDeploymentStatus({
-              owner: 'devRavit',
+              owner: '${{ github.repository_owner }}',
               repo: '${{ steps.validate.outputs.project }}',
               deployment_id: ${{ steps.deployment.outputs.result }},
               state: 'in_progress',
@@ -88,6 +88,17 @@ jobs:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Build ECR Image URI
+        id: ecr
+        env:
+          PROJECT: ${{ steps.validate.outputs.project }}
+          VERSION: ${{ github.event.client_payload.version }}
+        run: |
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          REGION="${{ secrets.AWS_REGION }}"
+          IMAGE_URI="${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com/${PROJECT}:${VERSION}"
+          echo "image_uri=$IMAGE_URI" >> $GITHUB_OUTPUT
 
       - name: Resolve secrets ARNs
         id: secrets
@@ -111,10 +122,6 @@ jobs:
               FULL_ARN="${SECRET_ARN}:${KEY}::"
               RUNTIME_SECRETS=$(echo "$RUNTIME_SECRETS" | jq -c ". + {\"$ENV_NAME\": \"$FULL_ARN\"}")
             done
-
-            echo "Secret $SECRET_ID found with keys: $SECRET_KEYS"
-          else
-            echo "No secret found at $SECRET_ID, skipping secrets injection"
           fi
 
           echo "runtime_secrets<<EOF" >> $GITHUB_OUTPUT
@@ -138,7 +145,7 @@ jobs:
         if: steps.check-service.outputs.exists == 'false'
         id: create-service
         env:
-          IMAGE_URI: ${{ github.event.client_payload.image_uri }}
+          IMAGE_URI: ${{ steps.ecr.outputs.image_uri }}
           SERVICE_NAME: ${{ steps.config.outputs.service_name }}
           PORT: ${{ steps.config.outputs.port }}
           CPU: ${{ steps.config.outputs.cpu }}
@@ -196,7 +203,7 @@ jobs:
           github-token: ${{ secrets.PAT }}
           script: |
             await github.rest.repos.createDeploymentStatus({
-              owner: 'devRavit',
+              owner: '${{ github.repository_owner }}',
               repo: '${{ steps.validate.outputs.project }}',
               deployment_id: ${{ steps.deployment.outputs.result }},
               state: 'success',
@@ -210,7 +217,7 @@ jobs:
           github-token: ${{ secrets.PAT }}
           script: |
             await github.rest.repos.createDeploymentStatus({
-              owner: 'devRavit',
+              owner: '${{ github.repository_owner }}',
               repo: '${{ steps.validate.outputs.project }}',
               deployment_id: ${{ steps.deployment.outputs.result }},
               state: 'failure',
@@ -233,7 +240,7 @@ jobs:
             // Check if tag already exists
             try {
               await github.rest.git.getRef({
-                owner: 'devRavit',
+                owner: '${{ github.repository_owner }}',
                 repo: project,
                 ref: `tags/${tagName}`
               });
@@ -248,7 +255,7 @@ jobs:
             const body = changelog ? changelog + footer : `Deployed to production via AWS App Runner.${footer}`;
 
             await github.rest.repos.createRelease({
-              owner: 'devRavit',
+              owner: '${{ github.repository_owner }}',
               repo: project,
               tag_name: tagName,
               name: tagName,

@@ -1,5 +1,4 @@
 name: stash
-source_repo: devRavit/stash
 type: apprunner
 
 apprunner:
