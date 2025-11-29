@@ -93,11 +93,11 @@ jobs:
         id: ecr
         env:
           PROJECT: ${{ steps.validate.outputs.project }}
-          VERSION: ${{ github.event.client_payload.version }}
         run: |
           ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
           REGION="${{ secrets.AWS_REGION }}"
-          IMAGE_URI="${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com/${PROJECT}:${VERSION}"
+          # Always use 'latest' tag for App Runner - simplifies deployment
+          IMAGE_URI="${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com/${PROJECT}:latest"
           echo "image_uri=$IMAGE_URI" >> $GITHUB_OUTPUT
 
       - name: Resolve secrets ARNs
@@ -193,8 +193,33 @@ jobs:
 
       - name: Deploy to existing App Runner
         if: steps.check-service.outputs.exists == 'true'
+        env:
+          SERVICE_ARN: ${{ steps.check-service.outputs.arn }}
+          IMAGE_URI: ${{ steps.ecr.outputs.image_uri }}
+          ECR_ROLE_ARN: ${{ secrets.APP_RUNNER_ECR_ROLE_ARN }}
         run: |
-          aws apprunner start-deployment --service-arn ${{ steps.check-service.outputs.arn }}
+          # Check if service is using 'latest' tag
+          CURRENT_IMAGE=$(aws apprunner describe-service --service-arn "$SERVICE_ARN" \
+            --query 'Service.SourceConfiguration.ImageRepository.ImageIdentifier' --output text)
+
+          if [[ "$CURRENT_IMAGE" == *":latest" ]]; then
+            # Already using latest - just trigger deployment
+            aws apprunner start-deployment --service-arn "$SERVICE_ARN"
+          else
+            # Migrate to latest tag (one-time)
+            IMAGE_CONFIG=$(aws apprunner describe-service --service-arn "$SERVICE_ARN" \
+              --query 'Service.SourceConfiguration.ImageRepository.ImageConfiguration')
+            aws apprunner update-service --service-arn "$SERVICE_ARN" \
+              --source-configuration "{
+                \"AuthenticationConfiguration\": {\"AccessRoleArn\": \"$ECR_ROLE_ARN\"},
+                \"ImageRepository\": {
+                  \"ImageIdentifier\": \"$IMAGE_URI\",
+                  \"ImageRepositoryType\": \"ECR\",
+                  \"ImageConfiguration\": $IMAGE_CONFIG
+                },
+                \"AutoDeploymentsEnabled\": false
+              }"
+          fi
 
       - name: Set Deployment Success
         if: success()
