@@ -128,12 +128,15 @@ jobs:
               # Build ARN with key reference: arn:...:secret:name-suffix:KEY::
               FULL_ARN="${SECRET_ARN}:${SECRET_KEY}::"
 
-              # Add to JSON object
-              RUNTIME_SECRETS=$(echo "$RUNTIME_SECRETS" | yq -o=json ". + {\"$ENV_NAME\": \"$FULL_ARN\"}")
+              # Add to JSON object (use -I=0 for compact single-line JSON)
+              RUNTIME_SECRETS=$(echo "$RUNTIME_SECRETS" | yq -o=json -I=0 ". + {\"$ENV_NAME\": \"$FULL_ARN\"}")
             done
           fi
 
-          echo "runtime_secrets=$RUNTIME_SECRETS" >> $GITHUB_OUTPUT
+          # Use heredoc format for multiline-safe output
+          echo "runtime_secrets<<EOF" >> $GITHUB_OUTPUT
+          echo "$RUNTIME_SECRETS" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
 
       - name: Login to Amazon ECR
         id: login-ecr
