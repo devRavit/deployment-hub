@@ -17,6 +17,6 @@ apprunner:
     JAVA_TOOL_OPTIONS: "-Xmx256m -XX:+UseG1GC"
 
 secrets:
-  - env: MONGODB_URI
+  - env: spring.data.mongodb.uri
     secret: prod/stash
-    key: MONGODB_URI
+    key: spring.data.mongodb.uri
