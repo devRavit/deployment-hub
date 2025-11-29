@@ -50,10 +50,6 @@ jobs:
           yq -o=json -I=0 '.apprunner.env // {}' $CONFIG >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
 
-          # Extract secrets config as JSON (use heredoc for multiline)
-          echo "secrets<<EOF" >> $GITHUB_OUTPUT
-          yq -o=json -I=0 '.secrets // []' $CONFIG >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
 
       - name: Create GitHub Deployment
         id: deployment
@@ -96,31 +92,29 @@ jobs:
       - name: Resolve secrets ARNs
         id: secrets
         env:
-          SECRETS_CONFIG: ${{ steps.config.outputs.secrets }}
+          PROJECT: ${{ steps.validate.outputs.project }}
         run: |
-          # Parse secrets config and build RuntimeEnvironmentSecrets JSON
+          # Build RuntimeEnvironmentSecrets from production/{project} secret
           RUNTIME_SECRETS="{}"
+          SECRET_ID="production/${PROJECT}"
 
-          if [ "$SECRETS_CONFIG" != "[]" ] && [ "$SECRETS_CONFIG" != "null" ]; then
-            for row in $(echo "$SECRETS_CONFIG" | yq -o=json -I=0 '.[]'); do
-              ENV_NAME=$(echo "$row" | yq '.env')
-              SECRET_NAME=$(echo "$row" | yq '.secret')
-              SECRET_KEY=$(echo "$row" | yq '.key')
+          # Check if secret exists
+          if aws secretsmanager describe-secret --secret-id "$SECRET_ID" &>/dev/null; then
+            SECRET_ARN=$(aws secretsmanager describe-secret --secret-id "$SECRET_ID" --query 'ARN' --output text)
 
-              # Get the secret ARN from AWS
-              SECRET_ARN=$(aws secretsmanager describe-secret --secret-id "$SECRET_NAME" --query 'ARN' --output text)
+            # Get all keys from the secret
+            SECRET_KEYS=$(aws secretsmanager get-secret-value --secret-id "$SECRET_ID" --query 'SecretString' --output text | jq -r 'keys[]')
 
-              if [ -z "$SECRET_ARN" ] || [ "$SECRET_ARN" == "None" ]; then
-                echo "::error::Secret not found: $SECRET_NAME"
-                exit 1
-              fi
-
-              # Build ARN with key reference
-              FULL_ARN="${SECRET_ARN}:${SECRET_KEY}::"
-
-              # Add to JSON object
-              RUNTIME_SECRETS=$(echo "$RUNTIME_SECRETS" | yq -o=json -I=0 ". + {\"$ENV_NAME\": \"$FULL_ARN\"}")
+            for KEY in $SECRET_KEYS; do
+              # Convert spring.mongodb.uri -> SPRING_MONGODB_URI
+              ENV_NAME=$(echo "$KEY" | tr '.' '_' | tr '[:lower:]' '[:upper:]')
+              FULL_ARN="${SECRET_ARN}:${KEY}::"
+              RUNTIME_SECRETS=$(echo "$RUNTIME_SECRETS" | jq -c ". + {\"$ENV_NAME\": \"$FULL_ARN\"}")
             done
+
+            echo "Secret $SECRET_ID found with keys: $SECRET_KEYS"
+          else
+            echo "No secret found at $SECRET_ID, skipping secrets injection"
           fi
 
           echo "runtime_secrets<<EOF" >> $GITHUB_OUTPUT
