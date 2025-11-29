@@ -1,0 +1,19 @@
+name: stash
+source_repo: devRavit/stash
+type: apprunner
+
+apprunner:
+  service_name: stash-api
+  port: 9090
+  cpu: "0.25 vCPU"
+  memory: "0.5 GB"
+  health_check:
+    path: /health
+    interval: 10
+    timeout: 5
+    healthy_threshold: 1
+    unhealthy_threshold: 5
+  java_opts: "-Xmx256m -XX:+UseG1GC"
+
+secrets:
+  MONGODB_URI: MONGODB_SECRET_ARN
