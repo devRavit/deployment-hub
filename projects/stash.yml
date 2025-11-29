@@ -3,7 +3,7 @@ source_repo: devRavit/stash
 type: apprunner
 
 apprunner:
-  service_name: stash-api
+  service_name: stash
   port: 9090
   cpu: "0.25 vCPU"
   memory: "0.5 GB"

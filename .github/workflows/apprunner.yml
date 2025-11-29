@@ -35,7 +35,6 @@ jobs:
           CONFIG="${{ steps.validate.outputs.config_path }}"
 
           echo "name=$(yq '.name' $CONFIG)" >> $GITHUB_OUTPUT
-          echo "source_repo=$(yq '.source_repo' $CONFIG)" >> $GITHUB_OUTPUT
           echo "service_name=$(yq '.apprunner.service_name' $CONFIG)" >> $GITHUB_OUTPUT
           echo "port=$(yq '.apprunner.port' $CONFIG)" >> $GITHUB_OUTPUT
           echo "cpu=$(yq '.apprunner.cpu' $CONFIG)" >> $GITHUB_OUTPUT
@@ -87,14 +86,6 @@ jobs:
               description: 'Deploying to AWS App Runner...'
             });
 
-      - name: Checkout source repository
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ steps.config.outputs.source_repo }}
-          ref: ${{ github.event.client_payload.sha }}
-          token: ${{ secrets.PAT }}
-          path: source
-
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -106,7 +97,6 @@ jobs:
         id: secrets
         env:
           SECRETS_CONFIG: ${{ steps.config.outputs.secrets }}
-          AWS_REGION: ${{ secrets.AWS_REGION }}
         run: |
           # Parse secrets config and build RuntimeEnvironmentSecrets JSON
           RUNTIME_SECRETS="{}"
@@ -125,33 +115,17 @@ jobs:
                 exit 1
               fi
 
-              # Build ARN with key reference: arn:...:secret:name-suffix:KEY::
+              # Build ARN with key reference
               FULL_ARN="${SECRET_ARN}:${SECRET_KEY}::"
 
-              # Add to JSON object (use -I=0 for compact single-line JSON)
+              # Add to JSON object
               RUNTIME_SECRETS=$(echo "$RUNTIME_SECRETS" | yq -o=json -I=0 ". + {\"$ENV_NAME\": \"$FULL_ARN\"}")
             done
           fi
 
-          # Use heredoc format for multiline-safe output
           echo "runtime_secrets<<EOF" >> $GITHUB_OUTPUT
           echo "$RUNTIME_SECRETS" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
-
-      - name: Login to Amazon ECR
-        id: login-ecr
-        uses: aws-actions/amazon-ecr-login@v2
-
-      - name: Build and push image
-        env:
-          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          SERVICE_NAME: ${{ steps.config.outputs.service_name }}
-          VERSION: ${{ github.event.client_payload.version }}
-        run: |
-          cd source
-          docker build -t $ECR_REGISTRY/$SERVICE_NAME:$VERSION -t $ECR_REGISTRY/$SERVICE_NAME:latest .
-          docker push $ECR_REGISTRY/$SERVICE_NAME:$VERSION
-          docker push $ECR_REGISTRY/$SERVICE_NAME:latest
 
       - name: Check if App Runner service exists
         id: check-service
@@ -170,7 +144,7 @@ jobs:
         if: steps.check-service.outputs.exists == 'false'
         id: create-service
         env:
-          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_URI: ${{ github.event.client_payload.image_uri }}
           SERVICE_NAME: ${{ steps.config.outputs.service_name }}
           PORT: ${{ steps.config.outputs.port }}
           CPU: ${{ steps.config.outputs.cpu }}
@@ -205,7 +179,7 @@ jobs:
             --source-configuration "{
               \"AuthenticationConfiguration\": {\"AccessRoleArn\": \"$ECR_ROLE_ARN\"},
               \"ImageRepository\": {
-                \"ImageIdentifier\": \"$ECR_REGISTRY/$SERVICE_NAME:latest\",
+                \"ImageIdentifier\": \"$IMAGE_URI\",
                 \"ImageRepositoryType\": \"ECR\",
                 \"ImageConfiguration\": $IMAGE_CONFIG
               },
