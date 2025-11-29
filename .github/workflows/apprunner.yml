@@ -46,13 +46,15 @@ jobs:
           echo "health_healthy=$(yq '.apprunner.health_check.healthy_threshold' $CONFIG)" >> $GITHUB_OUTPUT
           echo "health_unhealthy=$(yq '.apprunner.health_check.unhealthy_threshold' $CONFIG)" >> $GITHUB_OUTPUT
 
-          # Extract environment variables as JSON
-          ENV_VARS=$(yq -o=json '.apprunner.env // {}' $CONFIG)
-          echo "env_vars=$ENV_VARS" >> $GITHUB_OUTPUT
+          # Extract environment variables as JSON (use heredoc for multiline)
+          echo "env_vars<<EOF" >> $GITHUB_OUTPUT
+          yq -o=json -I=0 '.apprunner.env // {}' $CONFIG >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
 
-          # Extract secrets config as JSON
-          SECRETS=$(yq -o=json '.secrets // []' $CONFIG)
-          echo "secrets=$SECRETS" >> $GITHUB_OUTPUT
+          # Extract secrets config as JSON (use heredoc for multiline)
+          echo "secrets<<EOF" >> $GITHUB_OUTPUT
+          yq -o=json -I=0 '.secrets // []' $CONFIG >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
 
       - name: Create GitHub Deployment
         id: deployment
