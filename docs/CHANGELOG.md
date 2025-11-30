@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.0.3
+`2025.11.30 12:00`
+
+프로젝트별 region 및 IAM role 설정 지원
+
+- `projects.yml`에 `region`, `aws.ecr_role`, `aws.instance_role` 필드 추가
+- GitHub Secrets에서 `AWS_ACCOUNT_ID`만 사용, role ARN은 동적 조합
+- 배포 단순화: `start-deployment`만 호출 (마이그레이션 로직 제거)
+- 불필요한 secrets 정리: `AWS_REGION`, `APP_RUNNER_*_ROLE_ARN` 삭제
+
+---
+
 ## v0.0.2
 `2025.11.29 22:22`
 
