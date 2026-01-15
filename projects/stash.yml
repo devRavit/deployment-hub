@@ -5,6 +5,7 @@ region: ap-northeast-1
 aws:
   ecr_role: stash-apprunner-ecr-role
   instance_role: AppRunnerStashInstanceRole
+  secrets_manager_id: production/stash
 
 apprunner:
   service_name: stash

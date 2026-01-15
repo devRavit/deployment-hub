@@ -48,9 +48,17 @@ jobs:
           echo "health_healthy=$(yq '.apprunner.health_check.healthy_threshold' $CONFIG)" >> $GITHUB_OUTPUT
           echo "health_unhealthy=$(yq '.apprunner.health_check.unhealthy_threshold' $CONFIG)" >> $GITHUB_OUTPUT
 
-          # Extract environment variables as JSON (use heredoc for multiline)
+          # AWS Secrets Manager ID (optional)
+          SECRETS_MANAGER_ID=$(yq '.aws.secrets_manager_id // ""' $CONFIG)
+          echo "secrets_manager_id=$SECRETS_MANAGER_ID" >> $GITHUB_OUTPUT
+
+          # Extract environment variables as JSON and add SPRING_CONFIG_IMPORT if secrets_manager_id is set
+          BASE_ENV=$(yq -o=json -I=0 '.apprunner.env // {}' $CONFIG)
+          if [ -n "$SECRETS_MANAGER_ID" ]; then
+            BASE_ENV=$(echo "$BASE_ENV" | jq -c ". + {\"SPRING_CONFIG_IMPORT\": \"aws-secretsmanager:$SECRETS_MANAGER_ID\"}")
+          fi
           echo "env_vars<<EOF" >> $GITHUB_OUTPUT
-          yq -o=json -I=0 '.apprunner.env // {}' $CONFIG >> $GITHUB_OUTPUT
+          echo "$BASE_ENV" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
 
 
@@ -103,34 +111,6 @@ jobs:
           IMAGE_URI="${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com/${PROJECT}:latest"
           echo "image_uri=$IMAGE_URI" >> $GITHUB_OUTPUT
 
-      - name: Resolve secrets ARNs
-        id: secrets
-        env:
-          PROJECT: ${{ steps.validate.outputs.project }}
-        run: |
-          # Build RuntimeEnvironmentSecrets from production/{project} secret
-          RUNTIME_SECRETS="{}"
-          SECRET_ID="production/${PROJECT}"
-
-          # Check if secret exists
-          if aws secretsmanager describe-secret --secret-id "$SECRET_ID" &>/dev/null; then
-            SECRET_ARN=$(aws secretsmanager describe-secret --secret-id "$SECRET_ID" --query 'ARN' --output text)
-
-            # Get all keys from the secret
-            SECRET_KEYS=$(aws secretsmanager get-secret-value --secret-id "$SECRET_ID" --query 'SecretString' --output text | jq -r 'keys[]')
-
-            for KEY in $SECRET_KEYS; do
-              # Convert spring.mongodb.uri -> SPRING_MONGODB_URI
-              ENV_NAME=$(echo "$KEY" | tr '.' '_' | tr '[:lower:]' '[:upper:]')
-              FULL_ARN="${SECRET_ARN}:${KEY}::"
-              RUNTIME_SECRETS=$(echo "$RUNTIME_SECRETS" | jq -c ". + {\"$ENV_NAME\": \"$FULL_ARN\"}")
-            done
-          fi
-
-          echo "runtime_secrets<<EOF" >> $GITHUB_OUTPUT
-          echo "$RUNTIME_SECRETS" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
-
       - name: Check if App Runner service exists
         id: check-service
         env:
@@ -159,7 +139,6 @@ jobs:
           HEALTH_HEALTHY: ${{ steps.config.outputs.health_healthy }}
           HEALTH_UNHEALTHY: ${{ steps.config.outputs.health_unhealthy }}
           ENV_VARS: ${{ steps.config.outputs.env_vars }}
-          RUNTIME_SECRETS: ${{ steps.secrets.outputs.runtime_secrets }}
           ECR_ROLE_ARN: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/${{ steps.config.outputs.ecr_role }}
           INSTANCE_ROLE_ARN: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/${{ steps.config.outputs.instance_role }}
         run: |
@@ -169,11 +148,6 @@ jobs:
           # Add environment variables if present
           if [ "$ENV_VARS" != "{}" ] && [ "$ENV_VARS" != "null" ]; then
             IMAGE_CONFIG="$IMAGE_CONFIG, \"RuntimeEnvironmentVariables\": $ENV_VARS"
-          fi
-
-          # Add secrets if present
-          if [ "$RUNTIME_SECRETS" != "{}" ] && [ "$RUNTIME_SECRETS" != "null" ]; then
-            IMAGE_CONFIG="$IMAGE_CONFIG, \"RuntimeEnvironmentSecrets\": $RUNTIME_SECRETS"
           fi
 
           IMAGE_CONFIG="$IMAGE_CONFIG}"
@@ -194,10 +168,36 @@ jobs:
             --query 'Service.ServiceArn' --output text)
           echo "arn=$SERVICE_ARN" >> $GITHUB_OUTPUT
 
-      - name: Deploy to existing App Runner
+      - name: Update and deploy to existing App Runner
         if: steps.check-service.outputs.exists == 'true'
+        env:
+          SERVICE_ARN: ${{ steps.check-service.outputs.arn }}
+          IMAGE_URI: ${{ steps.ecr.outputs.image_uri }}
+          PORT: ${{ steps.config.outputs.port }}
+          ENV_VARS: ${{ steps.config.outputs.env_vars }}
+          ECR_ROLE_ARN: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/${{ steps.config.outputs.ecr_role }}
         run: |
-          aws apprunner start-deployment --service-arn ${{ steps.check-service.outputs.arn }}
+          # Build ImageConfiguration
+          IMAGE_CONFIG="{\"Port\": \"$PORT\""
+
+          # Add environment variables if present
+          if [ "$ENV_VARS" != "{}" ] && [ "$ENV_VARS" != "null" ]; then
+            IMAGE_CONFIG="$IMAGE_CONFIG, \"RuntimeEnvironmentVariables\": $ENV_VARS"
+          fi
+
+          IMAGE_CONFIG="$IMAGE_CONFIG}"
+
+          aws apprunner update-service \
+            --service-arn "$SERVICE_ARN" \
+            --source-configuration "{
+              \"AuthenticationConfiguration\": {\"AccessRoleArn\": \"$ECR_ROLE_ARN\"},
+              \"ImageRepository\": {
+                \"ImageIdentifier\": \"$IMAGE_URI\",
+                \"ImageRepositoryType\": \"ECR\",
+                \"ImageConfiguration\": $IMAGE_CONFIG
+              },
+              \"AutoDeploymentsEnabled\": false
+            }"
 
       - name: Set Deployment Success
         if: success()
