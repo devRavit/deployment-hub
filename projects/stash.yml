@@ -19,4 +19,5 @@ apprunner:
     unhealthy_threshold: 5
   env:
     JAVA_TOOL_OPTIONS: "-Xmx256m -XX:+UseG1GC"
+    SPRING_PROFILES_ACTIVE: production
 
