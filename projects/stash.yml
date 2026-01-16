@@ -13,7 +13,7 @@ apprunner:
   cpu: "0.25 vCPU"
   memory: "0.5 GB"
   health_check:
-    path: /health
+    path: /externals/health
     interval: 10
     timeout: 5
     healthy_threshold: 1
