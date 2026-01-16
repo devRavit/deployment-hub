@@ -48,17 +48,10 @@ jobs:
           echo "health_healthy=$(yq '.apprunner.health_check.healthy_threshold' $CONFIG)" >> $GITHUB_OUTPUT
           echo "health_unhealthy=$(yq '.apprunner.health_check.unhealthy_threshold' $CONFIG)" >> $GITHUB_OUTPUT
 
-          # AWS Secrets Manager ID (optional)
-          SECRETS_MANAGER_ID=$(yq '.aws.secrets_manager_id // ""' $CONFIG)
-          echo "secrets_manager_id=$SECRETS_MANAGER_ID" >> $GITHUB_OUTPUT
-
-          # Extract environment variables as JSON and add SPRING_CONFIG_IMPORT if secrets_manager_id is set
-          BASE_ENV=$(yq -o=json -I=0 '.apprunner.env // {}' $CONFIG)
-          if [ -n "$SECRETS_MANAGER_ID" ]; then
-            BASE_ENV=$(echo "$BASE_ENV" | jq -c ". + {\"SPRING_CONFIG_IMPORT\": \"aws-secretsmanager:$SECRETS_MANAGER_ID\"}")
-          fi
+          # Extract environment variables as JSON
+          ENV_VARS=$(yq -o=json -I=0 '.apprunner.env // {}' $CONFIG)
           echo "env_vars<<EOF" >> $GITHUB_OUTPUT
-          echo "$BASE_ENV" >> $GITHUB_OUTPUT
+          echo "$ENV_VARS" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
 
 
