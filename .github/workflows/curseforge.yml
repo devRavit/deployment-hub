@@ -101,10 +101,11 @@ jobs:
           # -n "{file}:{label}" : 파일명과 CurseForge 표시 라벨을 명시.
           #   기본 라벨이 버전만 (예: "v20260502.2") 이라 파일 목록에서 식별 어려움.
           #   {package-name}-{project-version} 형태로 통일해서 PvPster-v20260502.2 처럼 보이게 함.
+          #   주의: file_template 에 .zip 붙이면 안됨 (packager가 자동 append → .zip.zip 됨)
           args: >-
             -p ${{ steps.config.outputs.cf_project_id }}
             -t addon
-            -n "{package-name}-{project-version}.zip:{package-name}-{project-version}"
+            -n "{package-name}-{project-version}:{package-name}-{project-version}"
 
       - name: Upload zip artifact (dry-run)
         if: steps.input.outputs.dry_run == 'true'
