@@ -98,7 +98,13 @@ jobs:
           CF_API_KEY: ${{ secrets.CF_API_KEY }}
           GITHUB_OAUTH: ${{ secrets.PAT }}
         with:
-          args: -p ${{ steps.config.outputs.cf_project_id }} -t addon
+          # -n "{file}:{label}" : 파일명과 CurseForge 표시 라벨을 명시.
+          #   기본 라벨이 버전만 (예: "v20260502.2") 이라 파일 목록에서 식별 어려움.
+          #   {package-name}-{project-version} 형태로 통일해서 PvPster-v20260502.2 처럼 보이게 함.
+          args: >-
+            -p ${{ steps.config.outputs.cf_project_id }}
+            -t addon
+            -n "{package-name}-{project-version}.zip:{package-name}-{project-version}"
 
       - name: Upload zip artifact (dry-run)
         if: steps.input.outputs.dry_run == 'true'
