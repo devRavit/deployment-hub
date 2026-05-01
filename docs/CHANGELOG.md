@@ -11,6 +11,7 @@ CurseForge 배포 타입 추가 (WoW 애드온 지원)
 - `projects/pvpster.yml`: 첫 WoW 애드온 프로젝트 추가 (project_id placeholder)
 - README: Supported Deployment Types에 curseforge 추가
 - 신규 시크릿: `CF_API_KEY` (CurseForge Upload API). cross-repo 인증은 기존 `PAT` 재사용 (스코프에 pvpster 추가 필요)
+- `projects/pvpster.yml`: CurseForge 승인 후 실제 project_id (1530687) 적용
 
 ---
 
