@@ -107,3 +107,5 @@ jobs:
           name: ${{ steps.input.outputs.project }}-package
           path: addon/.release/*.zip
           retention-days: 30
+          include-hidden-files: true
+          if-no-files-found: error
