@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.1.0
+`2026.05.02 (KST)`
+
+CurseForge 배포 타입 추가 (WoW 애드온 지원)
+
+- `.github/workflows/curseforge.yml`: BigWigs Packager 기반 CurseForge 자동 업로드
+  - `repository_dispatch` (소스 리포 태그 push 트리거) + `workflow_dispatch` (수동 dry-run) 양쪽 지원
+  - dry-run 모드: zip 산출물을 GitHub Actions artifact로 출력
+- `projects/pvpster.yml`: 첫 WoW 애드온 프로젝트 추가 (project_id placeholder)
+- README: Supported Deployment Types에 curseforge 추가
+- 신규 시크릿: `CF_API_KEY` (CurseForge Upload API), `PAT_ADDONS` (cross-repo 인증)
+
+---
+
 ## v0.0.3
 `2025.11.30 12:00`
 

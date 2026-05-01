@@ -1,0 +1,109 @@
+name: Deploy WoW Addon to CurseForge
+
+on:
+  repository_dispatch:
+    types: [deploy-curseforge]
+  workflow_dispatch:
+    inputs:
+      project:
+        description: "Project name (matches projects/{project}.yml)"
+        required: true
+        type: string
+      ref:
+        description: "Git ref to package (branch/tag/sha)"
+        required: false
+        default: main
+        type: string
+      dry_run:
+        description: "Skip CurseForge upload, only produce zip artifact"
+        required: false
+        default: true
+        type: boolean
+
+concurrency:
+  group: deploy-curseforge-${{ github.event.client_payload.project || inputs.project }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout deployment-hub
+        uses: actions/checkout@v4
+
+      - name: Resolve inputs
+        id: input
+        run: |
+          if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
+            echo "project=${{ github.event.client_payload.project }}" >> $GITHUB_OUTPUT
+            echo "ref=${{ github.event.client_payload.ref }}" >> $GITHUB_OUTPUT
+            echo "dry_run=false" >> $GITHUB_OUTPUT
+          else
+            echo "project=${{ inputs.project }}" >> $GITHUB_OUTPUT
+            echo "ref=${{ inputs.ref }}" >> $GITHUB_OUTPUT
+            echo "dry_run=${{ inputs.dry_run }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Validate project config
+        id: validate
+        run: |
+          PROJECT="${{ steps.input.outputs.project }}"
+          CONFIG="projects/${PROJECT}.yml"
+          if [ ! -f "$CONFIG" ]; then
+            echo "::error::Unknown project: $PROJECT"
+            exit 1
+          fi
+          TYPE=$(yq '.type' "$CONFIG")
+          if [ "$TYPE" != "curseforge" ]; then
+            echo "::error::Project '$PROJECT' is not curseforge type (actual: $TYPE)"
+            exit 1
+          fi
+          echo "config_path=$CONFIG" >> $GITHUB_OUTPUT
+
+      - name: Load project config
+        id: config
+        run: |
+          CONFIG="${{ steps.validate.outputs.config_path }}"
+          echo "source_repo=$(yq '.source_repo' $CONFIG)" >> $GITHUB_OUTPUT
+          echo "cf_project_id=$(yq '.curseforge.project_id' $CONFIG)" >> $GITHUB_OUTPUT
+
+      - name: Verify project_id (production only)
+        if: steps.input.outputs.dry_run != 'true'
+        run: |
+          ID="${{ steps.config.outputs.cf_project_id }}"
+          if [ -z "$ID" ] || [ "$ID" = "0" ] || [ "$ID" = "null" ]; then
+            echo "::error::CurseForge project_id is unset (got: '$ID'). Update projects/${{ steps.input.outputs.project }}.yml after CurseForge approval."
+            exit 1
+          fi
+
+      - name: Checkout addon source
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.config.outputs.source_repo }}
+          ref: ${{ steps.input.outputs.ref }}
+          path: addon
+          fetch-depth: 0
+          token: ${{ secrets.PAT_ADDONS }}
+
+      - name: Run BigWigs Packager (dry-run)
+        if: steps.input.outputs.dry_run == 'true'
+        uses: BigWigsMods/packager@v2
+        with:
+          args: -d -t addon
+
+      - name: Run BigWigs Packager (release)
+        if: steps.input.outputs.dry_run != 'true'
+        uses: BigWigsMods/packager@v2
+        env:
+          CF_API_KEY: ${{ secrets.CF_API_KEY }}
+          GITHUB_OAUTH: ${{ secrets.PAT_ADDONS }}
+        with:
+          args: -p ${{ steps.config.outputs.cf_project_id }} -t addon
+
+      - name: Upload zip artifact (dry-run)
+        if: steps.input.outputs.dry_run == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.input.outputs.project }}-package
+          path: addon/.release/*.zip
+          retention-days: 30

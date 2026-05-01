@@ -54,6 +54,10 @@ AWS Secrets Manager에서 `production/{project}` 컨벤션으로 자동 탐색:
 ## Supported Deployment Types
 
 - **apprunner**: AWS App Runner (ECR 이미지 기반)
+- **curseforge**: WoW Addon CurseForge 자동 배포 (BigWigs Packager 기반)
+  - `repository_dispatch`(태그 push 시 자동) 또는 `workflow_dispatch`(수동 dry-run) 트리거
+  - dry-run 모드: 패키지 zip을 GitHub Actions artifact로 출력 (CurseForge 등록 신청용)
+  - 시크릿: `CF_API_KEY` (CurseForge Upload API), `PAT_ADDONS` (cross-repo 인증)
 
 ## Recent Changes
 

@@ -1,0 +1,7 @@
+name: pvpster
+source_repo: devRavit/pvpster
+type: curseforge
+
+curseforge:
+  # CurseForge 승인 후 실제 project ID 로 교체할 것
+  project_id: 0
