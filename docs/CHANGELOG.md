@@ -10,7 +10,7 @@ CurseForge 배포 타입 추가 (WoW 애드온 지원)
   - dry-run 모드: zip 산출물을 GitHub Actions artifact로 출력
 - `projects/pvpster.yml`: 첫 WoW 애드온 프로젝트 추가 (project_id placeholder)
 - README: Supported Deployment Types에 curseforge 추가
-- 신규 시크릿: `CF_API_KEY` (CurseForge Upload API), `PAT_ADDONS` (cross-repo 인증)
+- 신규 시크릿: `CF_API_KEY` (CurseForge Upload API). cross-repo 인증은 기존 `PAT` 재사용 (스코프에 pvpster 추가 필요)
 
 ---
 

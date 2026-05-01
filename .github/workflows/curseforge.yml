@@ -83,7 +83,7 @@ jobs:
           ref: ${{ steps.input.outputs.ref }}
           path: addon
           fetch-depth: 0
-          token: ${{ secrets.PAT_ADDONS }}
+          token: ${{ secrets.PAT }}
 
       - name: Run BigWigs Packager (dry-run)
         if: steps.input.outputs.dry_run == 'true'
@@ -96,7 +96,7 @@ jobs:
         uses: BigWigsMods/packager@v2
         env:
           CF_API_KEY: ${{ secrets.CF_API_KEY }}
-          GITHUB_OAUTH: ${{ secrets.PAT_ADDONS }}
+          GITHUB_OAUTH: ${{ secrets.PAT }}
         with:
           args: -p ${{ steps.config.outputs.cf_project_id }} -t addon
 
