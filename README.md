@@ -58,7 +58,8 @@ AWS Secrets Manager에서 `production/{project}` 컨벤션으로 자동 탐색:
   - 워커형 워크로드(자율 워커·고정 IP 필요·HTTP 진입 적음)에 적합
   - 필요한 GitHub Actions 시크릿: `LIGHTSAIL_SSH_KEY` (인스턴스 키페어 private key 전문)
   - 인스턴스 측 사전 셋업: docker, AWS CLI, ECR pull 권한을 가진 IAM access key (`~/.aws/credentials`)
-  - 헬스체크: 인스턴스 localhost에서 컨테이너 포트로 curl 폴링
+  - 포트 매핑: `host_port` (Lightsail firewall 노출 포트) ↔ `container_port` (앱 listen 포트). 둘 생략 시 `port` 사용 (이전 호환).
+  - 헬스체크: 인스턴스 localhost 의 `host_port` 로 curl 폴링
 - **curseforge**: WoW Addon CurseForge 자동 배포 (BigWigs Packager 기반)
   - `repository_dispatch`(태그 push 시 자동) 또는 `workflow_dispatch`(수동 dry-run) 트리거
   - dry-run 모드: 패키지 zip을 GitHub Actions artifact로 출력 (CurseForge 등록 신청용)

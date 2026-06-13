@@ -39,7 +39,12 @@ jobs:
           echo "secrets_manager_id=$(yq '.aws.secrets_manager_id' $CONFIG)" >> $GITHUB_OUTPUT
           echo "instance_name=$(yq '.lightsail.instance_name' $CONFIG)" >> $GITHUB_OUTPUT
           echo "container_name=$(yq '.lightsail.container_name' $CONFIG)" >> $GITHUB_OUTPUT
-          echo "port=$(yq '.lightsail.port' $CONFIG)" >> $GITHUB_OUTPUT
+          # container_port: 컨테이너 내부에서 Spring/앱이 listen 하는 포트
+          # host_port: Lightsail 인스턴스에서 외부로 노출되는 포트 (생략 시 container_port 와 동일 → 이전 동작 유지)
+          CONTAINER_PORT=$(yq '.lightsail.container_port // .lightsail.port' $CONFIG)
+          HOST_PORT=$(yq '.lightsail.host_port // .lightsail.container_port // .lightsail.port' $CONFIG)
+          echo "container_port=$CONTAINER_PORT" >> $GITHUB_OUTPUT
+          echo "host_port=$HOST_PORT" >> $GITHUB_OUTPUT
           echo "health_path=$(yq '.lightsail.health_check.path' $CONFIG)" >> $GITHUB_OUTPUT
           echo "health_interval=$(yq '.lightsail.health_check.interval' $CONFIG)" >> $GITHUB_OUTPUT
           echo "health_timeout=$(yq '.lightsail.health_check.timeout' $CONFIG)" >> $GITHUB_OUTPUT
@@ -155,10 +160,11 @@ jobs:
           REGISTRY: ${{ steps.ecr.outputs.registry }}
           IMAGE_URI: ${{ steps.ecr.outputs.image_uri }}
           CONTAINER_NAME: ${{ steps.config.outputs.container_name }}
-          PORT: ${{ steps.config.outputs.port }}
+          HOST_PORT: ${{ steps.config.outputs.host_port }}
+          CONTAINER_PORT: ${{ steps.config.outputs.container_port }}
           REGION: ${{ steps.config.outputs.region }}
         run: |
-          ssh ubuntu@"$IP" REGISTRY="$REGISTRY" IMAGE_URI="$IMAGE_URI" CONTAINER_NAME="$CONTAINER_NAME" PORT="$PORT" REGION="$REGION" bash -s <<'REMOTE'
+          ssh ubuntu@"$IP" REGISTRY="$REGISTRY" IMAGE_URI="$IMAGE_URI" CONTAINER_NAME="$CONTAINER_NAME" HOST_PORT="$HOST_PORT" CONTAINER_PORT="$CONTAINER_PORT" REGION="$REGION" bash -s <<'REMOTE'
           set -euo pipefail
           aws ecr get-login-password --region "$REGION" | sudo docker login --username AWS --password-stdin "$REGISTRY"
           sudo docker pull "$IMAGE_URI"
@@ -171,7 +177,7 @@ jobs:
             --restart unless-stopped \
             --env-file /etc/"$CONTAINER_NAME"/env \
             -v /home/ubuntu/.aws:/root/.aws:ro \
-            -p "$PORT":"$PORT" \
+            -p "$HOST_PORT":"$CONTAINER_PORT" \
             "$IMAGE_URI"
           sudo docker image prune -af
           REMOTE
@@ -179,7 +185,7 @@ jobs:
       - name: Wait for health check
         env:
           IP: ${{ steps.lightsail.outputs.ip }}
-          PORT: ${{ steps.config.outputs.port }}
+          HOST_PORT: ${{ steps.config.outputs.host_port }}
           HEALTH_PATH: ${{ steps.config.outputs.health_path }}
           INTERVAL: ${{ steps.config.outputs.health_interval }}
           TIMEOUT: ${{ steps.config.outputs.health_timeout }}
@@ -188,7 +194,7 @@ jobs:
           # Health-check from the instance itself (localhost) — instance may not expose port publicly
           ATTEMPTS=$((RETRIES * 6))   # interval-driven, ~ INTERVAL * ATTEMPTS seconds budget
           for i in $(seq 1 "$ATTEMPTS"); do
-            STATUS=$(ssh ubuntu@"$IP" "curl -s -o /dev/null -w '%{http_code}' --max-time $TIMEOUT http://localhost:${PORT}${HEALTH_PATH} || echo 000")
+            STATUS=$(ssh ubuntu@"$IP" "curl -s -o /dev/null -w '%{http_code}' --max-time $TIMEOUT http://localhost:${HOST_PORT}${HEALTH_PATH} || echo 000")
             if [ "$STATUS" = "200" ]; then
               echo "Health check passed (HTTP $STATUS)"
               exit 0
