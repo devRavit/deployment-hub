@@ -8,10 +8,10 @@ CurseForge 배포 타입 추가 (WoW 애드온 지원)
 - `.github/workflows/curseforge.yml`: BigWigs Packager 기반 CurseForge 자동 업로드
   - `repository_dispatch` (소스 리포 태그 push 트리거) + `workflow_dispatch` (수동 dry-run) 양쪽 지원
   - dry-run 모드: zip 산출물을 GitHub Actions artifact로 출력
-- `projects/pvpster.yml`: 첫 WoW 애드온 프로젝트 추가 (project_id placeholder)
+- `projects/<addon>.yml`: 첫 WoW 애드온 프로젝트 추가 (project_id placeholder)
 - README: Supported Deployment Types에 curseforge 추가
-- 신규 시크릿: `CF_API_KEY` (CurseForge Upload API). cross-repo 인증은 기존 `PAT` 재사용 (스코프에 pvpster 추가 필요)
-- `projects/pvpster.yml`: CurseForge 승인 후 실제 project_id (1530687) 적용
+- 신규 시크릿: `CF_API_KEY` (CurseForge Upload API). cross-repo 인증은 기존 `PAT` 재사용 (스코프에 신규 애드온 repo 추가 필요)
+- `projects/<addon>.yml`: CurseForge 승인 후 실제 project_id 적용
 
 ---
 
@@ -34,7 +34,7 @@ Secrets Manager 동적 주입 리팩토링
 
 - `production/{project}` 컨벤션으로 자동 secret 탐색
 - `spring.mongodb.uri` → `SPRING_MONGODB_URI` 자동 변환
-- stash.yml에서 secrets 설정 제거 (코드 변경 없이 secret 추가 가능)
+- 프로젝트 설정 파일에서 secrets 항목 제거 (코드 변경 없이 secret 추가 가능)
 
 ---
 
@@ -44,7 +44,7 @@ Secrets Manager 동적 주입 리팩토링
 deployment-hub 초기 구성
 
 - App Runner 배포 workflow 추가
-- stash 프로젝트 설정 추가
+- 최초 프로젝트 설정 추가
 - GitHub Deployment, Release 자동 생성
 
 ---
