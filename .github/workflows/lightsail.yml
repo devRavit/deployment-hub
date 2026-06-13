@@ -100,26 +100,20 @@ jobs:
           echo "image_uri=$IMAGE_URI" >> $GITHUB_OUTPUT
           echo "registry=$REGISTRY" >> $GITHUB_OUTPUT
 
-      - name: Resolve env block (static + secrets)
+      - name: Resolve static env block
         id: envblock
         env:
-          SECRETS_ID: ${{ steps.config.outputs.secrets_manager_id }}
           STATIC_ENV: ${{ steps.config.outputs.env_vars }}
+          REGION: ${{ steps.config.outputs.region }}
         run: |
-          # Resolve Secrets Manager — dotted keys → UPPER_SNAKE_CASE
-          if [ -n "$SECRETS_ID" ] && [ "$SECRETS_ID" != "null" ]; then
-            SECRETS_JSON=$(aws secretsmanager get-secret-value --secret-id "$SECRETS_ID" --query SecretString --output text 2>/dev/null || echo '{}')
-          else
-            SECRETS_JSON='{}'
-          fi
-
-          ENV_FROM_SECRETS=$(echo "$SECRETS_JSON" | jq -r 'to_entries | map("\(.key|ascii_upcase|gsub("\\.";"_"))=\(.value|tostring)") | .[]')
+          # 정적 env만 주입 — Secrets Manager는 컨테이너 내부의 Spring Cloud AWS가
+          # 인스턴스에 마운트된 IAM 자격증명으로 직접 호출함.
           ENV_FROM_STATIC=$(echo "$STATIC_ENV" | jq -r 'to_entries | map("\(.key)=\(.value|tostring)") | .[]')
 
           {
             echo "env_block<<__ENV_EOF__"
             echo "$ENV_FROM_STATIC"
-            echo "$ENV_FROM_SECRETS"
+            echo "AWS_REGION=$REGION"
             echo "__ENV_EOF__"
           } >> $GITHUB_OUTPUT
 
@@ -170,10 +164,13 @@ jobs:
           sudo docker pull "$IMAGE_URI"
           sudo docker stop "$CONTAINER_NAME" 2>/dev/null || true
           sudo docker rm "$CONTAINER_NAME" 2>/dev/null || true
+          # /home/ubuntu/.aws 를 컨테이너에 read-only로 마운트 → Spring Cloud AWS가
+          # Secrets Manager (production/$CONTAINER_NAME) 를 직접 호출.
           sudo docker run -d \
             --name "$CONTAINER_NAME" \
             --restart unless-stopped \
             --env-file /etc/"$CONTAINER_NAME"/env \
+            -v /home/ubuntu/.aws:/root/.aws:ro \
             -p "$PORT":"$PORT" \
             "$IMAGE_URI"
           sudo docker image prune -af
