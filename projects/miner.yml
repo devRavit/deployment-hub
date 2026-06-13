@@ -1,0 +1,19 @@
+name: miner
+type: lightsail
+region: ap-northeast-2
+
+aws:
+  secrets_manager_id: production/miner
+
+lightsail:
+  instance_name: miner
+  container_name: miner
+  port: 8080
+  health_check:
+    path: /health
+    interval: 10
+    timeout: 5
+    retries: 3
+  env:
+    SPRING_PROFILES_ACTIVE: production
+    JAVA_TOOL_OPTIONS: "-Xmx1024m -XX:+UseG1GC"

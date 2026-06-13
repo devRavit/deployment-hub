@@ -1,0 +1,271 @@
+name: Deploy to Lightsail
+
+on:
+  repository_dispatch:
+    types: [deploy-lightsail]
+
+concurrency:
+  group: deploy-${{ github.event.client_payload.project }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout deployment-hub
+        uses: actions/checkout@v4
+
+      - name: Validate project
+        id: validate
+        run: |
+          PROJECT="${{ github.event.client_payload.project }}"
+          CONFIG="projects/${PROJECT}.yml"
+
+          if [ ! -f "$CONFIG" ]; then
+            echo "::error::Unknown project: $PROJECT"
+            exit 1
+          fi
+
+          echo "config_path=$CONFIG" >> $GITHUB_OUTPUT
+          echo "project=$PROJECT" >> $GITHUB_OUTPUT
+
+      - name: Load project config
+        id: config
+        run: |
+          CONFIG="${{ steps.validate.outputs.config_path }}"
+
+          echo "name=$(yq '.name' $CONFIG)" >> $GITHUB_OUTPUT
+          echo "region=$(yq '.region' $CONFIG)" >> $GITHUB_OUTPUT
+          echo "secrets_manager_id=$(yq '.aws.secrets_manager_id' $CONFIG)" >> $GITHUB_OUTPUT
+          echo "instance_name=$(yq '.lightsail.instance_name' $CONFIG)" >> $GITHUB_OUTPUT
+          echo "container_name=$(yq '.lightsail.container_name' $CONFIG)" >> $GITHUB_OUTPUT
+          echo "port=$(yq '.lightsail.port' $CONFIG)" >> $GITHUB_OUTPUT
+          echo "health_path=$(yq '.lightsail.health_check.path' $CONFIG)" >> $GITHUB_OUTPUT
+          echo "health_interval=$(yq '.lightsail.health_check.interval' $CONFIG)" >> $GITHUB_OUTPUT
+          echo "health_timeout=$(yq '.lightsail.health_check.timeout' $CONFIG)" >> $GITHUB_OUTPUT
+          echo "health_retries=$(yq '.lightsail.health_check.retries' $CONFIG)" >> $GITHUB_OUTPUT
+
+          ENV_VARS=$(yq -o=json -I=0 '.lightsail.env // {}' $CONFIG)
+          echo "env_vars<<EOF" >> $GITHUB_OUTPUT
+          echo "$ENV_VARS" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Deployment
+        id: deployment
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.PAT }}
+          script: |
+            const deployment = await github.rest.repos.createDeployment({
+              owner: '${{ github.repository_owner }}',
+              repo: '${{ steps.validate.outputs.project }}',
+              ref: '${{ github.event.client_payload.sha }}',
+              environment: 'production',
+              auto_merge: false,
+              required_contexts: [],
+              description: 'Deploy v${{ github.event.client_payload.version }} to AWS Lightsail'
+            });
+            return deployment.data.id;
+          result-encoding: string
+
+      - name: Set Deployment In Progress
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.PAT }}
+          script: |
+            await github.rest.repos.createDeploymentStatus({
+              owner: '${{ github.repository_owner }}',
+              repo: '${{ steps.validate.outputs.project }}',
+              deployment_id: ${{ steps.deployment.outputs.result }},
+              state: 'in_progress',
+              description: 'Deploying to AWS Lightsail...'
+            });
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ steps.config.outputs.region }}
+
+      - name: Build ECR Image URI
+        id: ecr
+        env:
+          PROJECT: ${{ steps.validate.outputs.project }}
+          REGION: ${{ steps.config.outputs.region }}
+        run: |
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          IMAGE_URI="${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com/${PROJECT}:latest"
+          REGISTRY="${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com"
+          echo "image_uri=$IMAGE_URI" >> $GITHUB_OUTPUT
+          echo "registry=$REGISTRY" >> $GITHUB_OUTPUT
+
+      - name: Resolve env block (static + secrets)
+        id: envblock
+        env:
+          SECRETS_ID: ${{ steps.config.outputs.secrets_manager_id }}
+          STATIC_ENV: ${{ steps.config.outputs.env_vars }}
+        run: |
+          # Resolve Secrets Manager — dotted keys → UPPER_SNAKE_CASE
+          if [ -n "$SECRETS_ID" ] && [ "$SECRETS_ID" != "null" ]; then
+            SECRETS_JSON=$(aws secretsmanager get-secret-value --secret-id "$SECRETS_ID" --query SecretString --output text 2>/dev/null || echo '{}')
+          else
+            SECRETS_JSON='{}'
+          fi
+
+          ENV_FROM_SECRETS=$(echo "$SECRETS_JSON" | jq -r 'to_entries | map("\(.key|ascii_upcase|gsub("\\.";"_"))=\(.value|tostring)") | .[]')
+          ENV_FROM_STATIC=$(echo "$STATIC_ENV" | jq -r 'to_entries | map("\(.key)=\(.value|tostring)") | .[]')
+
+          {
+            echo "env_block<<__ENV_EOF__"
+            echo "$ENV_FROM_STATIC"
+            echo "$ENV_FROM_SECRETS"
+            echo "__ENV_EOF__"
+          } >> $GITHUB_OUTPUT
+
+      - name: Get Lightsail instance public IP
+        id: lightsail
+        env:
+          INSTANCE: ${{ steps.config.outputs.instance_name }}
+        run: |
+          IP=$(aws lightsail get-instance --instance-name "$INSTANCE" --query 'instance.publicIpAddress' --output text)
+          if [ -z "$IP" ] || [ "$IP" = "None" ]; then
+            echo "::error::Could not resolve public IP for instance $INSTANCE"
+            exit 1
+          fi
+          echo "ip=$IP" >> $GITHUB_OUTPUT
+
+      - name: Setup SSH
+        env:
+          SSH_KEY: ${{ secrets.LIGHTSAIL_SSH_KEY }}
+          IP: ${{ steps.lightsail.outputs.ip }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$SSH_KEY" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H "$IP" >> ~/.ssh/known_hosts 2>/dev/null
+          ssh -o BatchMode=yes ubuntu@"$IP" "echo ok"
+
+      - name: Write env file to instance
+        env:
+          IP: ${{ steps.lightsail.outputs.ip }}
+          CONTAINER_NAME: ${{ steps.config.outputs.container_name }}
+          ENV_BLOCK: ${{ steps.envblock.outputs.env_block }}
+        run: |
+          ssh ubuntu@"$IP" "sudo mkdir -p /etc/${CONTAINER_NAME} && sudo chmod 750 /etc/${CONTAINER_NAME}"
+          printf '%s\n' "$ENV_BLOCK" | ssh ubuntu@"$IP" "sudo tee /etc/${CONTAINER_NAME}/env > /dev/null && sudo chmod 640 /etc/${CONTAINER_NAME}/env"
+
+      - name: Pull image and restart container
+        env:
+          IP: ${{ steps.lightsail.outputs.ip }}
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+          IMAGE_URI: ${{ steps.ecr.outputs.image_uri }}
+          CONTAINER_NAME: ${{ steps.config.outputs.container_name }}
+          PORT: ${{ steps.config.outputs.port }}
+          REGION: ${{ steps.config.outputs.region }}
+        run: |
+          ssh ubuntu@"$IP" REGISTRY="$REGISTRY" IMAGE_URI="$IMAGE_URI" CONTAINER_NAME="$CONTAINER_NAME" PORT="$PORT" REGION="$REGION" bash -s <<'REMOTE'
+          set -euo pipefail
+          aws ecr get-login-password --region "$REGION" | sudo docker login --username AWS --password-stdin "$REGISTRY"
+          sudo docker pull "$IMAGE_URI"
+          sudo docker stop "$CONTAINER_NAME" 2>/dev/null || true
+          sudo docker rm "$CONTAINER_NAME" 2>/dev/null || true
+          sudo docker run -d \
+            --name "$CONTAINER_NAME" \
+            --restart unless-stopped \
+            --env-file /etc/"$CONTAINER_NAME"/env \
+            -p "$PORT":"$PORT" \
+            "$IMAGE_URI"
+          sudo docker image prune -af
+          REMOTE
+
+      - name: Wait for health check
+        env:
+          IP: ${{ steps.lightsail.outputs.ip }}
+          PORT: ${{ steps.config.outputs.port }}
+          HEALTH_PATH: ${{ steps.config.outputs.health_path }}
+          INTERVAL: ${{ steps.config.outputs.health_interval }}
+          TIMEOUT: ${{ steps.config.outputs.health_timeout }}
+          RETRIES: ${{ steps.config.outputs.health_retries }}
+        run: |
+          # Health-check from the instance itself (localhost) — instance may not expose port publicly
+          ATTEMPTS=$((RETRIES * 6))   # interval-driven, ~ INTERVAL * ATTEMPTS seconds budget
+          for i in $(seq 1 "$ATTEMPTS"); do
+            STATUS=$(ssh ubuntu@"$IP" "curl -s -o /dev/null -w '%{http_code}' --max-time $TIMEOUT http://localhost:${PORT}${HEALTH_PATH} || echo 000")
+            if [ "$STATUS" = "200" ]; then
+              echo "Health check passed (HTTP $STATUS)"
+              exit 0
+            fi
+            echo "Attempt $i/$ATTEMPTS: HTTP $STATUS — retrying in ${INTERVAL}s"
+            sleep "$INTERVAL"
+          done
+          echo "::error::Health check failed after $ATTEMPTS attempts"
+          exit 1
+
+      - name: Set Deployment Success
+        if: success()
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.PAT }}
+          script: |
+            await github.rest.repos.createDeploymentStatus({
+              owner: '${{ github.repository_owner }}',
+              repo: '${{ steps.validate.outputs.project }}',
+              deployment_id: ${{ steps.deployment.outputs.result }},
+              state: 'success',
+              description: 'Deployed v${{ github.event.client_payload.version }} to production'
+            });
+
+      - name: Set Deployment Failure
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.PAT }}
+          script: |
+            await github.rest.repos.createDeploymentStatus({
+              owner: '${{ github.repository_owner }}',
+              repo: '${{ steps.validate.outputs.project }}',
+              deployment_id: ${{ steps.deployment.outputs.result }},
+              state: 'failure',
+              description: 'Deployment failed'
+            });
+
+      - name: Create GitHub Release
+        if: success()
+        uses: actions/github-script@v7
+        env:
+          CHANGELOG: ${{ github.event.client_payload.changelog }}
+        with:
+          github-token: ${{ secrets.PAT }}
+          script: |
+            const version = '${{ github.event.client_payload.version }}';
+            const tagName = `v${version}`;
+            const project = '${{ steps.validate.outputs.project }}';
+            const sha = '${{ github.event.client_payload.sha }}';
+
+            try {
+              await github.rest.git.getRef({
+                owner: '${{ github.repository_owner }}',
+                repo: project,
+                ref: `tags/${tagName}`
+              });
+              console.log(`Tag ${tagName} already exists, skipping release creation`);
+              return;
+            } catch (e) {
+              // Tag doesn't exist, create release
+            }
+
+            const changelog = process.env.CHANGELOG || '';
+            const footer = `\n---\n**Tag:** ${tagName}\n**Commit:** ${sha.substring(0, 7)}`;
+            const body = changelog ? changelog + footer : `Deployed to production via AWS Lightsail.${footer}`;
+
+            await github.rest.repos.createRelease({
+              owner: '${{ github.repository_owner }}',
+              repo: project,
+              tag_name: tagName,
+              name: tagName,
+              body: body,
+              draft: false,
+              prerelease: false,
+              target_commitish: sha
+            });
