@@ -1,0 +1,39 @@
+name: Sync CHANGELOG to README
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - docs/CHANGELOG.md
+      - .github/workflows/sync-changelog.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Inject latest CHANGELOG entries into README
+        id: inject
+        run: |
+          python3 .github/scripts/sync_changelog.py \
+            --changelog docs/CHANGELOG.md \
+            --readme README.md \
+            --limit 3
+
+      - name: Commit & push if README changed
+        run: |
+          if git diff --quiet README.md; then
+            echo "README 변경 사항 없음 — 종료"
+            exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add README.md
+          git commit -m "docs: CHANGELOG 최신 항목 README 동기화 [skip ci]"
+          git push
