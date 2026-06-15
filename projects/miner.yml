@@ -5,6 +5,13 @@ region: ap-northeast-2
 aws:
   secrets_manager_id: production/miner
 
+# ECR 이미지 보관 정책 — 배포(deploy)는 :VERSION + :latest push, 실행은 :latest.
+# keep_count 만큼 tagged 이미지(latest + 직전들)만 보관, 나머지 + untagged 는 lifecycle 로 만료.
+# rollback(rollback.yml) 은 보관된 직전 버전으로만 가능.
+ecr:
+  lifecycle:
+    keep_count: 2
+
 lightsail:
   instance_name: miner
   container_name: miner

@@ -1,0 +1,198 @@
+name: Rollback Lightsail
+
+# 긴급 시 ECR 의 직전(또는 지정) 버전으로 1-step 복귀.
+# 실행은 평상시 :latest 이지만 rollback 은 특정 버전 태그를 pull 해 교체한다.
+
+on:
+  workflow_dispatch:
+    inputs:
+      project:
+        description: 프로젝트 (projects/<name>.yml)
+        required: true
+      target_version:
+        description: "복귀할 버전 (비우면 ECR 직전 = latest-1). 직전이 없으면 조용히 skip"
+        required: false
+
+concurrency:
+  group: deploy-${{ inputs.project }}
+  cancel-in-progress: false
+
+jobs:
+  rollback:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout deployment-hub
+        uses: actions/checkout@v4
+
+      - name: Validate project
+        id: validate
+        run: |
+          PROJECT="${{ inputs.project }}"
+          CONFIG="projects/${PROJECT}.yml"
+          if [ ! -f "$CONFIG" ]; then
+            echo "::error::Unknown project: $PROJECT"
+            exit 1
+          fi
+          echo "config_path=$CONFIG" >> "$GITHUB_OUTPUT"
+          echo "project=$PROJECT" >> "$GITHUB_OUTPUT"
+
+      - name: Load project config
+        id: config
+        run: |
+          CONFIG="${{ steps.validate.outputs.config_path }}"
+          echo "region=$(yq '.region' $CONFIG)" >> "$GITHUB_OUTPUT"
+          echo "instance_name=$(yq '.lightsail.instance_name' $CONFIG)" >> "$GITHUB_OUTPUT"
+          echo "container_name=$(yq '.lightsail.container_name' $CONFIG)" >> "$GITHUB_OUTPUT"
+          CONTAINER_PORT=$(yq '.lightsail.container_port // .lightsail.port' $CONFIG)
+          HOST_PORT=$(yq '.lightsail.host_port // .lightsail.container_port // .lightsail.port' $CONFIG)
+          echo "container_port=$CONTAINER_PORT" >> "$GITHUB_OUTPUT"
+          echo "host_port=$HOST_PORT" >> "$GITHUB_OUTPUT"
+          echo "health_path=$(yq '.lightsail.health_check.path' $CONFIG)" >> "$GITHUB_OUTPUT"
+          echo "health_interval=$(yq '.lightsail.health_check.interval' $CONFIG)" >> "$GITHUB_OUTPUT"
+          echo "health_timeout=$(yq '.lightsail.health_check.timeout' $CONFIG)" >> "$GITHUB_OUTPUT"
+          echo "health_retries=$(yq '.lightsail.health_check.retries' $CONFIG)" >> "$GITHUB_OUTPUT"
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ steps.config.outputs.region }}
+
+      - name: Resolve rollback target
+        id: target
+        env:
+          PROJECT: ${{ steps.validate.outputs.project }}
+          REGION: ${{ steps.config.outputs.region }}
+          INPUT_VERSION: ${{ inputs.target_version }}
+        run: |
+          set -euo pipefail
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          REGISTRY="${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com"
+          if [ -n "$INPUT_VERSION" ]; then
+            TARGET="$INPUT_VERSION"
+          else
+            LATEST_DIGEST=$(aws ecr describe-images --repository-name "$PROJECT" \
+              --image-ids imageTag=latest --query 'imageDetails[0].imageDigest' --output text 2>/dev/null || echo "")
+            TARGET=$(aws ecr describe-images --repository-name "$PROJECT" \
+              --query "reverse(sort_by(imageDetails[?imageDigest!='${LATEST_DIGEST}'],&imagePushedAt))[0].imageTags[0]" \
+              --output text 2>/dev/null || echo "None")
+          fi
+          if [ -z "$TARGET" ] || [ "$TARGET" = "None" ]; then
+            echo "::notice::복귀할 직전 버전이 없습니다 — rollback skip"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! aws ecr describe-images --repository-name "$PROJECT" --image-ids imageTag="$TARGET" >/dev/null 2>&1; then
+            echo "::notice::ECR 에 $TARGET 이미지가 없습니다 — rollback skip"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+          echo "registry=$REGISTRY" >> "$GITHUB_OUTPUT"
+          echo "image_uri=${REGISTRY}/${PROJECT}:${TARGET}" >> "$GITHUB_OUTPUT"
+          echo "latest_uri=${REGISTRY}/${PROJECT}:latest" >> "$GITHUB_OUTPUT"
+          echo "::notice::rollback target = $TARGET"
+
+      - name: Get Lightsail instance public IP
+        id: lightsail
+        if: steps.target.outputs.skip != 'true'
+        env:
+          INSTANCE: ${{ steps.config.outputs.instance_name }}
+        run: |
+          IP=$(aws lightsail get-instance --instance-name "$INSTANCE" --query 'instance.publicIpAddress' --output text)
+          if [ -z "$IP" ] || [ "$IP" = "None" ]; then
+            echo "::error::Could not resolve public IP for instance $INSTANCE"
+            exit 1
+          fi
+          echo "ip=$IP" >> "$GITHUB_OUTPUT"
+
+      - name: Setup SSH
+        if: steps.target.outputs.skip != 'true'
+        env:
+          SSH_KEY: ${{ secrets.LIGHTSAIL_SSH_KEY }}
+          IP: ${{ steps.lightsail.outputs.ip }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$SSH_KEY" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H "$IP" >> ~/.ssh/known_hosts 2>/dev/null
+          ssh -o BatchMode=yes ubuntu@"$IP" "echo ok"
+
+      - name: Pull target image and restart container
+        if: steps.target.outputs.skip != 'true'
+        env:
+          IP: ${{ steps.lightsail.outputs.ip }}
+          REGISTRY: ${{ steps.target.outputs.registry }}
+          IMAGE_URI: ${{ steps.target.outputs.image_uri }}
+          CONTAINER_NAME: ${{ steps.config.outputs.container_name }}
+          HOST_PORT: ${{ steps.config.outputs.host_port }}
+          CONTAINER_PORT: ${{ steps.config.outputs.container_port }}
+          REGION: ${{ steps.config.outputs.region }}
+        run: |
+          # 기존 /etc/<container>/env 를 그대로 재사용 (rollback 은 env 변경 안 함).
+          # prune 하지 않는다 — 실패 시 :latest 로 원복할 수 있도록 latest 이미지를 보존.
+          ssh ubuntu@"$IP" REGISTRY="$REGISTRY" IMAGE_URI="$IMAGE_URI" CONTAINER_NAME="$CONTAINER_NAME" HOST_PORT="$HOST_PORT" CONTAINER_PORT="$CONTAINER_PORT" REGION="$REGION" bash -s <<'REMOTE'
+          set -euo pipefail
+          aws ecr get-login-password --region "$REGION" | sudo docker login --username AWS --password-stdin "$REGISTRY"
+          sudo docker pull "$IMAGE_URI"
+          sudo docker stop "$CONTAINER_NAME" 2>/dev/null || true
+          sudo docker rm "$CONTAINER_NAME" 2>/dev/null || true
+          sudo docker run -d \
+            --name "$CONTAINER_NAME" \
+            --restart unless-stopped \
+            --env-file /etc/"$CONTAINER_NAME"/env \
+            -v /home/ubuntu/.aws:/root/.aws:ro \
+            -p "$HOST_PORT":"$CONTAINER_PORT" \
+            "$IMAGE_URI"
+          REMOTE
+
+      - name: Wait for health check
+        if: steps.target.outputs.skip != 'true'
+        env:
+          IP: ${{ steps.lightsail.outputs.ip }}
+          HOST_PORT: ${{ steps.config.outputs.host_port }}
+          HEALTH_PATH: ${{ steps.config.outputs.health_path }}
+          INTERVAL: ${{ steps.config.outputs.health_interval }}
+          TIMEOUT: ${{ steps.config.outputs.health_timeout }}
+          RETRIES: ${{ steps.config.outputs.health_retries }}
+        run: |
+          ATTEMPTS=$((RETRIES * 6))
+          for i in $(seq 1 "$ATTEMPTS"); do
+            STATUS=$(ssh ubuntu@"$IP" "curl -s -o /dev/null -w '%{http_code}' --max-time $TIMEOUT http://localhost:${HOST_PORT}${HEALTH_PATH} || echo 000")
+            if [ "$STATUS" = "200" ]; then
+              echo "Rollback health check passed (HTTP $STATUS)"
+              exit 0
+            fi
+            echo "Attempt $i/$ATTEMPTS: HTTP $STATUS — retrying in ${INTERVAL}s"
+            sleep "$INTERVAL"
+          done
+          echo "::error::Rollback health check failed after $ATTEMPTS attempts"
+          exit 1
+
+      - name: Restore latest on rollback failure
+        if: failure() && steps.target.outputs.skip != 'true'
+        env:
+          IP: ${{ steps.lightsail.outputs.ip }}
+          REGISTRY: ${{ steps.target.outputs.registry }}
+          LATEST_URI: ${{ steps.target.outputs.latest_uri }}
+          CONTAINER_NAME: ${{ steps.config.outputs.container_name }}
+          HOST_PORT: ${{ steps.config.outputs.host_port }}
+          CONTAINER_PORT: ${{ steps.config.outputs.container_port }}
+          REGION: ${{ steps.config.outputs.region }}
+        run: |
+          echo "::warning::rollback 실패 — :latest 로 원복합니다"
+          ssh ubuntu@"$IP" REGISTRY="$REGISTRY" IMAGE_URI="$LATEST_URI" CONTAINER_NAME="$CONTAINER_NAME" HOST_PORT="$HOST_PORT" CONTAINER_PORT="$CONTAINER_PORT" REGION="$REGION" bash -s <<'REMOTE'
+          set -euo pipefail
+          aws ecr get-login-password --region "$REGION" | sudo docker login --username AWS --password-stdin "$REGISTRY"
+          sudo docker pull "$IMAGE_URI"
+          sudo docker stop "$CONTAINER_NAME" 2>/dev/null || true
+          sudo docker rm "$CONTAINER_NAME" 2>/dev/null || true
+          sudo docker run -d \
+            --name "$CONTAINER_NAME" \
+            --restart unless-stopped \
+            --env-file /etc/"$CONTAINER_NAME"/env \
+            -v /home/ubuntu/.aws:/root/.aws:ro \
+            -p "$HOST_PORT":"$CONTAINER_PORT" \
+            "$IMAGE_URI"
+          REMOTE

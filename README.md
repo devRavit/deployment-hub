@@ -135,6 +135,15 @@ AWS Secrets Manager 에서 `aws.secrets_manager_id` 컨벤션(`production/{proje
   - `repository_dispatch`(태그 push 시 자동) 또는 `workflow_dispatch`(수동 dry-run) 트리거
   - dry-run 모드: 패키지 zip 을 GitHub Actions artifact 로 출력 (CurseForge 등록 신청용)
 
+## Rollback (Lightsail)
+
+긴급 시 직전(또는 지정) 버전으로 1-step 복귀:
+
+- GitHub Actions → **Rollback Lightsail** → Run workflow
+- 입력: `project` (예: `miner`), `target_version` (비우면 ECR 직전 = latest-1 자동)
+- 동작: ECR `:target` pull → 컨테이너 stop/rm/run → health check → 실패 시 `:latest` 자동 원복
+- 직전 버전이 ECR 에 없으면 조용히 skip — 보관 범위는 `projects/<name>.yml` 의 `ecr.lifecycle.keep_count` 에 의존 (기본 배포는 latest + 직전 2개만 보관)
+
 ## Recent Changes
 
 최신 변경 사항은 [docs/CHANGELOG.md](docs/CHANGELOG.md) 참조. 아래 영역은 `docs/CHANGELOG.md` push 시 자동 갱신됩니다.
