@@ -13,7 +13,9 @@ Lightsail rollback workflow + ECR lifecycle 정책 (miner #60)
   - `config.ecr.lifecycle.keep_count` 가 있으면 적용 (없는 프로젝트는 skip)
   - tagged 최근 N개(latest + 직전들) 보관 + untagged 1일 만료
 - `projects/miner.yml`: `ecr.lifecycle.keep_count: 2` (latest + 직전만 보관)
-- README: Rollback 사용법 추가
+- `.github/workflows/pr-body.yml`: PR 본문 10 섹션 게이트 (miner 패턴 — push/pull_request 트리거, open PR 없으면 skip)
+- `.github/workflows/ci.yml`: CHANGELOG 현행화 게이트 (최상단 `## vX.Y.Z` 가 main 대비 bump 됐는지 — miner 의 checkVersionBumped + checkChangelogEntry 동등)
+- README: mermaid 아키텍처 다이어그램 (ASCII → mermaid), `ecr.lifecycle` 스키마, Rollback 사용법
 
 ## v0.1.0
 `2026.05.02 (KST)`

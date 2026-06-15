@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  pull_request:
+
+jobs:
+  changelog-bumped:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: CHANGELOG 현행화 검증 (최상단 버전 bump)
+        run: |
+          set -euo pipefail
+          # deployment-hub 는 build.gradle 이 없어 CHANGELOG 최상단 '## vX.Y.Z' 가 곧 버전.
+          # miner 의 checkVersionBumped + checkChangelogEntry 와 동등한 게이트.
+          PR_VER=$(grep -m1 '^## v' docs/CHANGELOG.md | sed 's/^## v//')
+          MAIN_VER=$(git show origin/main:docs/CHANGELOG.md | grep -m1 '^## v' | sed 's/^## v//')
+          if [ -z "$PR_VER" ]; then
+            echo "::error::docs/CHANGELOG.md 최상단에 '## vX.Y.Z' 가 없습니다"
+            exit 1
+          fi
+          if [ "$PR_VER" = "$MAIN_VER" ]; then
+            echo "::error::CHANGELOG 최상단 버전이 main 과 동일 ($PR_VER) — 새 버전 entry 를 추가하세요"
+            exit 1
+          fi
+          echo "CHANGELOG bumped: $MAIN_VER → $PR_VER ✅"

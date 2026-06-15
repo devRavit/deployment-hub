@@ -8,17 +8,26 @@
 배포 타입별로 별도 워크플로(`apprunner.yml` / `lightsail.yml` / `curseforge.yml`)가 존재하며,
 소스 리포에서 `repository_dispatch` 이벤트를 보내면 해당 워크플로가 트리거됩니다.
 
+```mermaid
+flowchart LR
+    subgraph repo["프로젝트 repo"]
+        ci["CI (build · test)"] --> pkg["Docker / Addon 패키지 빌드"]
+        pkg --> disp["repository_dispatch"]
+    end
+    subgraph hub["deployment-hub"]
+        load["projects/&lt;project&gt;.yml 로드"] --> sec["Secrets Manager 해결"]
+        sec --> deploy["배포 타입별 워크플로<br/>App Runner / Lightsail / CurseForge"]
+        deploy --> rel["GitHub Release 생성"]
+        rb["rollback.yml<br/>직전 버전 1-step 복귀"]
+    end
+    op(["운영자"])
+    disp -->|배포| load
+    op -.->|workflow_dispatch| rb
 ```
-[프로젝트 repo]                       [deployment-hub]
-    │                                       │
-    ├─ CI (build, test)                     │
-    ├─ Docker / Addon 패키지 빌드             │
-    └─ repository_dispatch ──────────────>  ├─ projects/{project}.yml 로드
-                                            ├─ Secrets Manager 에서 secret 해결
-                                            ├─ 배포 타입별 워크플로 실행
-                                            │   (App Runner / Lightsail / CurseForge)
-                                            └─ GitHub Release 생성
-```
+
+- **배포(deploy)**: `repository_dispatch` 트리거. lightsail 은 ECR `:VERSION` + `:latest` push, 실행은 `:latest`.
+- **롤백(rollback)**: `workflow_dispatch` 트리거 (`rollback.yml`). ECR 직전 버전으로 복귀 — [Rollback](#rollback-lightsail) 참조.
+- **이미지 보관**: `ecr.lifecycle.keep_count` 로 ECR tagged 최근 N개만 보관 (lifecycle policy).
 
 ## Project Configuration
 
@@ -74,6 +83,10 @@ region: <aws-region>
 
 aws:
   secrets_manager_id: production/<project>
+
+ecr:                       # 선택 — 없으면 lifecycle 미적용
+  lifecycle:
+    keep_count: 2          # tagged 최근 N개(latest + 직전) 보관, 나머지 + untagged(1일) 만료
 
 lightsail:
   instance_name: <instance>

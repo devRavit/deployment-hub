@@ -1,0 +1,74 @@
+name: PR body
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+  push:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  required-sections:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve PR body
+        id: body
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT" == "pull_request" ]]; then
+            body="$PR_BODY"
+          else
+            body=$(gh api -H "Accept: application/vnd.github+json" \
+              "repos/$REPO/pulls?head=${REPO%/*}:$REF&state=open" \
+              --jq '.[0].body // ""')
+            if [[ -z "$body" ]]; then
+              echo "✅ no open PR for branch $REF — skipping body check"
+              echo "skip=true" >>"$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+          delim="EOF_$(openssl rand -hex 8)"
+          {
+            echo "body<<$delim"
+            printf '%s\n' "$body"
+            echo "$delim"
+          } >>"$GITHUB_OUTPUT"
+
+      - name: Check 10 required sections
+        if: steps.body.outputs.skip != 'true'
+        env:
+          BODY: ${{ steps.body.outputs.body }}
+        run: |
+          set -euo pipefail
+          required=(
+            "작업 배경"
+            "의사결정"
+            "적용 패턴"
+            "작업 방향"
+            "기대 효과"
+            "개발 방법"
+            "테스트 커버리지 방향"
+            "잠재 이슈"
+            "확장 고려"
+            "문서 갱신"
+          )
+          missing=()
+          for section in "${required[@]}"; do
+            grep -qF "$section" <<<"$BODY" || missing+=("$section")
+          done
+          if (( ${#missing[@]} > 0 )); then
+            printf '❌ PR body missing required sections:\n'
+            printf '  - %s\n' "${missing[@]}"
+            echo
+            echo "see README / miner docs/workflow/pr-process.md (PR 본문 10 섹션)"
+            exit 1
+          fi
+          echo "✅ PR body has all required sections"
