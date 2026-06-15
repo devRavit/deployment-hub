@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.2.0
+`2026.06.15 (KST)`
+
+Lightsail rollback workflow + ECR lifecycle 정책 (miner #60)
+
+- `.github/workflows/rollback.yml`: `workflow_dispatch` 로 직전(또는 지정) 버전 1-step 복귀
+  - `target_version` 비우면 ECR 직전(latest-1) 자동 결정. 직전이 없으면 조용히 skip
+  - ECR `:target` pull → ssh stop/rm/run → health check → 실패 시 `:latest` 자동 원복
+  - rollback 은 `docker image prune` 하지 않음 — 원복용 `:latest` 이미지 보존
+- `.github/workflows/lightsail.yml`: 배포 시 ECR lifecycle 적용 step 추가
+  - `config.ecr.lifecycle.keep_count` 가 있으면 적용 (없는 프로젝트는 skip)
+  - tagged 최근 N개(latest + 직전들) 보관 + untagged 1일 만료
+- `projects/miner.yml`: `ecr.lifecycle.keep_count: 2` (latest + 직전만 보관)
+- README: Rollback 사용법 추가
+
 ## v0.1.0
 `2026.05.02 (KST)`
 

@@ -93,6 +93,31 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ steps.config.outputs.region }}
 
+      - name: Apply ECR lifecycle policy
+        env:
+          PROJECT: ${{ steps.validate.outputs.project }}
+          CONFIG: ${{ steps.validate.outputs.config_path }}
+        run: |
+          # config 에 ecr.lifecycle.keep_count 가 있으면 적용 (없으면 skip).
+          # tagged 최근 keep_count 개(latest + 직전)만 보관, 나머지 + untagged(1일) 만료.
+          KEEP=$(yq '.ecr.lifecycle.keep_count // 0' "$CONFIG")
+          if [ "$KEEP" -gt 0 ]; then
+            POLICY=$(jq -n --argjson keep "$KEEP" '{
+              rules: [
+                {rulePriority:1, description:"untagged 만료 (orphan 정리)",
+                 selection:{tagStatus:"untagged",countType:"sinceImagePushed",countUnit:"days",countNumber:1},
+                 action:{type:"expire"}},
+                {rulePriority:2, description:"tagged 최근 N개만 보관 (latest + 직전)",
+                 selection:{tagStatus:"tagged",tagPatternList:["*"],countType:"imageCountMoreThan",countNumber:$keep},
+                 action:{type:"expire"}}
+              ]
+            }')
+            aws ecr put-lifecycle-policy --repository-name "$PROJECT" --lifecycle-policy-text "$POLICY"
+            echo "ECR lifecycle 적용: tagged 최근 $KEEP 개 보관"
+          else
+            echo "ecr.lifecycle.keep_count 없음 — lifecycle skip"
+          fi
+
       - name: Build ECR Image URI
         id: ecr
         env:
