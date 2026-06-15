@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.2.3
+`2026.06.16`
+
+ci: 워크플로우 트리거 분리로 status check 중복 실행 해소
+
+- `ci.yml` (`changelog-bumped`): `pull_request:` 제거, `push:` only. PR 브랜치 push 시점에만 1회 산출.
+- `pr-body.yml` (`required-sections`): `push:` 제거 + open PR 조회 우회 로직 통째로 제거, `pull_request:` only. PR open/edit/synchronize 시점에만 1회 산출.
+- 이전: 동일 체크가 push + pull_request 양쪽 트리거로 2회씩 실행되어 PR 당 4개 status check 표시 + run 비용 중복.
+- main ruleset 의 두 required_status_checks (`changelog-bumped`, `required-sections`) 는 그대로 — 단일 ruleset 이 두 context 강제. trigger 가 다른 시점이라도 PR head commit 에 두 SUCCESS 가 모이면 merge 통과.
+- miner 의 `project_miner_ruleset_traps` 패턴과 동일 구조.
+
 ## v0.2.2
 `2026.06.16`
 
