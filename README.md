@@ -9,20 +9,19 @@
 소스 리포에서 `repository_dispatch` 이벤트를 보내면 해당 워크플로가 트리거됩니다.
 
 ```mermaid
-flowchart LR
+flowchart TB
     subgraph repo["프로젝트 repo"]
-        ci["CI (build · test)"] --> pkg["Docker / Addon 패키지 빌드"]
-        pkg --> disp["repository_dispatch"]
+        direction LR
+        ci["CI · 패키지 빌드"] --> disp["repository_dispatch"]
     end
     subgraph hub["deployment-hub"]
-        load["projects/&lt;project&gt;.yml 로드"] --> sec["Secrets Manager 해결"]
-        sec --> deploy["배포 타입별 워크플로<br/>App Runner / Lightsail / CurseForge"]
+        direction TB
+        load["config 로드 · Secrets 해결"] --> deploy["배포 워크플로<br/>App Runner / Lightsail / CurseForge"]
         deploy --> rel["GitHub Release 생성"]
-        rb["rollback.yml<br/>직전 버전 1-step 복귀"]
+        rb["rollback.yml · 직전 버전 1-step 복귀"]
     end
-    op(["운영자"])
-    disp -->|배포| load
-    op -.->|workflow_dispatch| rb
+    repo -->|배포| hub
+    op(["운영자"]) -. workflow_dispatch .-> rb
 ```
 
 - **배포(deploy)**: `repository_dispatch` 트리거. lightsail 은 ECR `:VERSION` + `:latest` push, 실행은 `:latest`.
