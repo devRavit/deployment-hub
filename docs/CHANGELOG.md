@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.2.1
+`2026.06.15 (KST)`
+
+chore: GitHub Actions 액션 최신 버전 업그레이드 (Node.js 20 deprecated 해소)
+
+- `actions/checkout` v4 → v6 (전 워크플로).
+- `actions/github-script` v7 → v9 (apprunner/lightsail).
+- `actions/upload-artifact` v4 → v7 (curseforge).
+- `aws-actions/configure-aws-credentials` v4 → v6 (apprunner/lightsail/rollback).
+- 3rd-party(`BigWigsMods/packager@v2`)는 유지.
+
 ## v0.2.0
 `2026.06.15 (KST)`
 
