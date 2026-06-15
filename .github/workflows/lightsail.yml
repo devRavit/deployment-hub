@@ -50,6 +50,14 @@ jobs:
           echo "health_timeout=$(yq '.lightsail.health_check.timeout' $CONFIG)" >> $GITHUB_OUTPUT
           echo "health_retries=$(yq '.lightsail.health_check.retries' $CONFIG)" >> $GITHUB_OUTPUT
 
+          # reverse_proxy 블록 (optional) — 있으면 Caddy 사이드카로 HTTPS 종단
+          RP_ENABLED=$(yq '.lightsail.reverse_proxy.enabled // false' $CONFIG)
+          RP_DOMAIN=$(yq '.lightsail.reverse_proxy.domain // ""' $CONFIG)
+          RP_EMAIL=$(yq '.lightsail.reverse_proxy.tls.email // ""' $CONFIG)
+          echo "rp_enabled=$RP_ENABLED" >> $GITHUB_OUTPUT
+          echo "rp_domain=$RP_DOMAIN" >> $GITHUB_OUTPUT
+          echo "rp_email=$RP_EMAIL" >> $GITHUB_OUTPUT
+
           ENV_VARS=$(yq -o=json -I=0 '.lightsail.env // {}' $CONFIG)
           echo "env_vars<<EOF" >> $GITHUB_OUTPUT
           echo "$ENV_VARS" >> $GITHUB_OUTPUT
@@ -179,6 +187,73 @@ jobs:
           ssh ubuntu@"$IP" "sudo mkdir -p /etc/${CONTAINER_NAME} && sudo chmod 750 /etc/${CONTAINER_NAME}"
           printf '%s\n' "$ENV_BLOCK" | ssh ubuntu@"$IP" "sudo tee /etc/${CONTAINER_NAME}/env > /dev/null && sudo chmod 640 /etc/${CONTAINER_NAME}/env"
 
+      - name: Bootstrap Caddy reverse proxy (if reverse_proxy enabled)
+        if: steps.config.outputs.rp_enabled == 'true'
+        env:
+          IP: ${{ steps.lightsail.outputs.ip }}
+          RP_DOMAIN: ${{ steps.config.outputs.rp_domain }}
+          RP_EMAIL: ${{ steps.config.outputs.rp_email }}
+          PROJECT: ${{ steps.validate.outputs.project }}
+          CONTAINER_NAME: ${{ steps.config.outputs.container_name }}
+          CONTAINER_PORT: ${{ steps.config.outputs.container_port }}
+          INSTANCE: ${{ steps.config.outputs.instance_name }}
+          REGION: ${{ steps.config.outputs.region }}
+        run: |
+          # Caddy = 인스턴스당 1개 (idempotent). 메인 Caddyfile은 sites.d/*.caddy 를 import.
+          # 프로젝트별 라우트는 sites.d/<project>.caddy 단편.
+          if [ -z "$RP_DOMAIN" ] || [ -z "$RP_EMAIL" ]; then
+            echo "::error::reverse_proxy.enabled=true 는 reverse_proxy.domain + reverse_proxy.tls.email 필수"
+            exit 1
+          fi
+
+          ssh ubuntu@"$IP" RP_EMAIL="$RP_EMAIL" PROJECT="$PROJECT" RP_DOMAIN="$RP_DOMAIN" \
+              CONTAINER_NAME="$CONTAINER_NAME" CONTAINER_PORT="$CONTAINER_PORT" bash -s <<'REMOTE'
+          set -euo pipefail
+
+          sudo mkdir -p /etc/caddy/sites.d
+
+          # 메인 Caddyfile — 없으면 생성. 있으면 email 만 갱신 (acme 계정).
+          if [ ! -f /etc/caddy/Caddyfile ]; then
+            sudo tee /etc/caddy/Caddyfile > /dev/null <<MAIN
+          {
+            email ${RP_EMAIL}
+          }
+          import /etc/caddy/sites.d/*.caddy
+          MAIN
+          fi
+
+          # 공유 docker network — Caddy ↔ 프로젝트 컨테이너 통신
+          sudo docker network create proxy_net 2>/dev/null || true
+
+          # Caddy 컨테이너 — 호스트당 1개 (idempotent)
+          if ! sudo docker ps -a --format '{{.Names}}' | grep -q '^caddy$'; then
+            sudo docker run -d --name caddy --restart unless-stopped \
+              --network proxy_net \
+              -p 80:80 -p 443:443 \
+              -v /etc/caddy/Caddyfile:/etc/caddy/Caddyfile:ro \
+              -v /etc/caddy/sites.d:/etc/caddy/sites.d:ro \
+              -v caddy_data:/data -v caddy_config:/config \
+              caddy:2-alpine
+          fi
+
+          # 프로젝트별 site snippet
+          sudo tee /etc/caddy/sites.d/${PROJECT}.caddy > /dev/null <<SITE
+          ${RP_DOMAIN} {
+            reverse_proxy ${CONTAINER_NAME}:${CONTAINER_PORT}
+            log {
+              output stdout
+              format console
+            }
+          }
+          SITE
+          REMOTE
+
+          # Lightsail firewall 443 OPEN (idempotent)
+          aws lightsail open-instance-public-ports \
+            --instance-name "$INSTANCE" \
+            --region "$REGION" \
+            --port-info fromPort=443,toPort=443,protocol=TCP 2>/dev/null || true
+
       - name: Pull image and restart container
         env:
           IP: ${{ steps.lightsail.outputs.ip }}
@@ -188,22 +263,42 @@ jobs:
           HOST_PORT: ${{ steps.config.outputs.host_port }}
           CONTAINER_PORT: ${{ steps.config.outputs.container_port }}
           REGION: ${{ steps.config.outputs.region }}
+          RP_ENABLED: ${{ steps.config.outputs.rp_enabled }}
         run: |
-          ssh ubuntu@"$IP" REGISTRY="$REGISTRY" IMAGE_URI="$IMAGE_URI" CONTAINER_NAME="$CONTAINER_NAME" HOST_PORT="$HOST_PORT" CONTAINER_PORT="$CONTAINER_PORT" REGION="$REGION" bash -s <<'REMOTE'
+          ssh ubuntu@"$IP" REGISTRY="$REGISTRY" IMAGE_URI="$IMAGE_URI" CONTAINER_NAME="$CONTAINER_NAME" \
+              HOST_PORT="$HOST_PORT" CONTAINER_PORT="$CONTAINER_PORT" REGION="$REGION" RP_ENABLED="$RP_ENABLED" bash -s <<'REMOTE'
           set -euo pipefail
           aws ecr get-login-password --region "$REGION" | sudo docker login --username AWS --password-stdin "$REGISTRY"
           sudo docker pull "$IMAGE_URI"
           sudo docker stop "$CONTAINER_NAME" 2>/dev/null || true
           sudo docker rm "$CONTAINER_NAME" 2>/dev/null || true
+
           # /home/ubuntu/.aws 를 컨테이너에 read-only로 마운트 → Spring Cloud AWS가
           # Secrets Manager (production/$CONTAINER_NAME) 를 직접 호출.
-          sudo docker run -d \
-            --name "$CONTAINER_NAME" \
-            --restart unless-stopped \
-            --env-file /etc/"$CONTAINER_NAME"/env \
-            -v /home/ubuntu/.aws:/root/.aws:ro \
-            -p "$HOST_PORT":"$CONTAINER_PORT" \
-            "$IMAGE_URI"
+          # reverse_proxy 모드: 컨테이너는 proxy_net 참여 + host 포트 노출 X (Caddy가 외부 종단).
+          # 기본 모드: host_port:container_port 직접 노출 (이전 동작 유지).
+          if [ "$RP_ENABLED" = "true" ]; then
+            sudo docker run -d \
+              --name "$CONTAINER_NAME" \
+              --restart unless-stopped \
+              --network proxy_net \
+              --env-file /etc/"$CONTAINER_NAME"/env \
+              -v /home/ubuntu/.aws:/root/.aws:ro \
+              --expose "$CONTAINER_PORT" \
+              "$IMAGE_URI"
+            # Caddy reload — site snippet 변경 반영
+            sudo docker exec caddy caddy reload --config /etc/caddy/Caddyfile 2>/dev/null || \
+              sudo docker restart caddy
+          else
+            sudo docker run -d \
+              --name "$CONTAINER_NAME" \
+              --restart unless-stopped \
+              --env-file /etc/"$CONTAINER_NAME"/env \
+              -v /home/ubuntu/.aws:/root/.aws:ro \
+              -p "$HOST_PORT":"$CONTAINER_PORT" \
+              "$IMAGE_URI"
+          fi
+
           sudo docker image prune -af
           REMOTE
 
@@ -211,15 +306,23 @@ jobs:
         env:
           IP: ${{ steps.lightsail.outputs.ip }}
           HOST_PORT: ${{ steps.config.outputs.host_port }}
+          CONTAINER_NAME: ${{ steps.config.outputs.container_name }}
+          CONTAINER_PORT: ${{ steps.config.outputs.container_port }}
           HEALTH_PATH: ${{ steps.config.outputs.health_path }}
           INTERVAL: ${{ steps.config.outputs.health_interval }}
           TIMEOUT: ${{ steps.config.outputs.health_timeout }}
           RETRIES: ${{ steps.config.outputs.health_retries }}
+          RP_ENABLED: ${{ steps.config.outputs.rp_enabled }}
         run: |
-          # Health-check from the instance itself (localhost) — instance may not expose port publicly
-          ATTEMPTS=$((RETRIES * 6))   # interval-driven, ~ INTERVAL * ATTEMPTS seconds budget
+          # 기본: 인스턴스 localhost:HOST_PORT 폴링.
+          # reverse_proxy 모드: host 포트 없으므로 컨테이너 내부에서 직접 폴링.
+          ATTEMPTS=$((RETRIES * 6))
           for i in $(seq 1 "$ATTEMPTS"); do
-            STATUS=$(ssh ubuntu@"$IP" "curl -s -o /dev/null -w '%{http_code}' --max-time $TIMEOUT http://localhost:${HOST_PORT}${HEALTH_PATH} || echo 000")
+            if [ "$RP_ENABLED" = "true" ]; then
+              STATUS=$(ssh ubuntu@"$IP" "sudo docker exec ${CONTAINER_NAME} sh -c 'wget -q -O /dev/null -S http://localhost:${CONTAINER_PORT}${HEALTH_PATH} 2>&1 | awk \"/HTTP/{print \\\$2}\" | tail -1' 2>/dev/null || echo 000")
+            else
+              STATUS=$(ssh ubuntu@"$IP" "curl -s -o /dev/null -w '%{http_code}' --max-time $TIMEOUT http://localhost:${HOST_PORT}${HEALTH_PATH} || echo 000")
+            fi
             if [ "$STATUS" = "200" ]; then
               echo "Health check passed (HTTP $STATUS)"
               exit 0

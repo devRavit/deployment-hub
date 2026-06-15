@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.2.2
+`2026.06.16`
+
+Lightsail 배포에 Caddy reverse proxy 사이드카 지원 추가 (HTTPS 종단 중앙화).
+
+- `lightsail.yml`: `reverse_proxy` 옵셔널 변수 추가. 활성 시 인스턴스당 공유 Caddy 컨테이너 자동 부트스트랩 + `sites.d/{project}.caddy` snippet 생성 + Lightsail firewall 443 OPEN + Caddy reload.
+- `lightsail.yml`: 배포·헬스체크 step 이 `reverse_proxy.enabled` 에 따라 분기. reverse_proxy 모드는 proxy_net docker network + host 포트 미노출 + 컨테이너 내부 health check.
+- `projects/miner.yml`: `reverse_proxy` 블록 활성화 (`miner.ravit.run` + Let's Encrypt). host_port 80 → 8080 으로 변경 (Caddy 가 외부 종단).
+- `README.md` + `docs/lightsail-reverse-proxy.md`: 설계·운영 문서 신설.
+- 기존 프로젝트 영향 없음 — `reverse_proxy` 미선언 시 기존 host_port 직접 노출 동작 유지.
+
 ## v0.2.1
 `2026.06.15 (KST)`
 

@@ -143,6 +143,7 @@ AWS Secrets Manager 에서 `aws.secrets_manager_id` 컨벤션(`production/{proje
   - 인스턴스 측 사전 셋업: docker, AWS CLI, ECR pull 권한을 가진 IAM access key (`~/.aws/credentials`)
   - 포트 매핑: `host_port` ↔ `container_port`. 둘 생략 시 `port` 사용 (이전 호환)
   - 헬스체크: 인스턴스 localhost 의 `host_port` 로 curl 폴링
+  - **HTTPS 종단 (옵션)**: `lightsail.reverse_proxy` 블록 선언 시 Caddy 사이드카가 자동 부트스트랩 — Let's Encrypt 인증서 발급·갱신·HTTPS 종단 일체. 상세는 [`docs/lightsail-reverse-proxy.md`](./docs/lightsail-reverse-proxy.md).
 - **curseforge**: WoW Addon CurseForge 자동 배포 (BigWigs Packager 기반)
   - `repository_dispatch`(태그 push 시 자동) 또는 `workflow_dispatch`(수동 dry-run) 트리거
   - dry-run 모드: 패키지 zip 을 GitHub Actions artifact 로 출력 (CurseForge 등록 신청용)
