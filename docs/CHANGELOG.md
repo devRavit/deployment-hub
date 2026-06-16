@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.2.8
+`2026.06.16`
+
+chore: 진단 워크플로 재투입 (Caddy DNS 재생성 검증)
+
+--dns 추가 후에도 80/443 refused 지속 — caddy DNS config/resolv.conf/nslookup 확인용 일회성 재투입.
+
 ## v0.2.7
 `2026.06.16`
 
