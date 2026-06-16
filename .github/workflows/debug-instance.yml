@@ -1,0 +1,38 @@
+name: Debug Instance
+on:
+  workflow_dispatch:
+    inputs:
+      instance:
+        default: miner
+jobs:
+  debug:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ap-northeast-2
+      - id: ip
+        run: echo "ip=$(aws lightsail get-instance --instance-name ${{ inputs.instance }} --query 'instance.publicIpAddress' --output text)" >> $GITHUB_OUTPUT
+      - env:
+          SSH_KEY: ${{ secrets.LIGHTSAIL_SSH_KEY }}
+          IP: ${{ steps.ip.outputs.ip }}
+        run: |
+          mkdir -p ~/.ssh; echo "$SSH_KEY" > ~/.ssh/id_rsa; chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H "$IP" >> ~/.ssh/known_hosts 2>/dev/null
+      - env:
+          IP: ${{ steps.ip.outputs.ip }}
+        run: |
+          echo "=== caddy DNS config ==="
+          ssh ubuntu@"$IP" "sudo docker inspect caddy --format '{{.HostConfig.Dns}}' 2>/dev/null || echo 'no caddy'"
+          echo "=== caddy uptime ==="
+          ssh ubuntu@"$IP" "sudo docker ps --format '{{.Names}} {{.Status}}' | grep caddy || echo 'caddy not running'"
+          echo "=== caddy recent logs ==="
+          ssh ubuntu@"$IP" "sudo docker logs caddy --since 5m 2>&1 | tail -15 || echo none"
+          echo "=== listening ports ==="
+          ssh ubuntu@"$IP" "sudo ss -tlnp | grep -E ':80 |:443 ' || echo 'NO 80/443 LISTENER'"
+          echo "=== caddy resolv.conf ==="
+          ssh ubuntu@"$IP" "sudo docker exec caddy cat /etc/resolv.conf 2>/dev/null || echo none"
+          echo "=== test DNS from caddy ==="
+          ssh ubuntu@"$IP" "sudo docker exec caddy nslookup acme-v02.api.letsencrypt.org 2>&1 | tail -5 || echo 'nslookup unavailable'"
