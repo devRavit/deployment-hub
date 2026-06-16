@@ -221,17 +221,21 @@ jobs:
             printf '{\n\temail %s\n}\nimport /etc/caddy/sites.d/*.caddy\n' \"\$RP_EMAIL\" | sudo tee /etc/caddy/Caddyfile > /dev/null
           fi
           sudo docker network create proxy_net 2>/dev/null || true
-          # Caddy 는 --dns 명시 필수 — 호스트의 systemd-resolved stub(127.0.0.53)은 컨테이너에서 접근
-          # 불가해 ACME(Let's Encrypt) DNS 해석 실패 → 인증서 미발급 → 443 미listen. 공용 resolver 지정.
-          # 기존 컨테이너의 --dns 적용 여부를 8.8.8.8 포함으로 감지 (빈 경우 inspect 가 '<no value>' 라
-          # '[]' 비교가 안 먹음). 미적용이면 강제 재생성.
-          CADDY_DNS=\$(sudo docker inspect caddy --format '{{.HostConfig.Dns}}' 2>/dev/null || echo '')
-          if sudo docker ps -a --format '{{.Names}}' | grep -q '^caddy\$' && ! echo \"\$CADDY_DNS\" | grep -q '8.8.8.8'; then
-            echo 'caddy 에 --dns 미적용 — 재생성'
+          # Caddy 는 desired-state 로 관리 — 실행 스펙(이미지+DNS+포트+볼륨) 전체를 한 변수에 정의하고
+          # sha256 해시를 label(miner.caddy.spec) 로 컨테이너에 박는다. 다음 배포에서 desired 해시와
+          # 현재 컨테이너 label 이 다르면(스펙 변경) 또는 컨테이너가 없으면 재생성. 같으면 그대로 유지.
+          # --dns 필수 이유: 호스트 systemd-resolved stub(127.0.0.53)은 컨테이너에서 접근 불가 →
+          # ACME DNS 해석 실패 → 인증서 미발급 → 443 미listen.
+          CADDY_IMAGE='caddy:2-alpine'
+          CADDY_ARGS='--restart unless-stopped --dns 8.8.8.8 --dns 1.1.1.1 --network proxy_net -p 80:80 -p 443:443 -v /etc/caddy/Caddyfile:/etc/caddy/Caddyfile:ro -v /etc/caddy/sites.d:/etc/caddy/sites.d:ro -v caddy_data:/data -v caddy_config:/config'
+          CADDY_SPEC=\$(printf '%s|%s' \"\$CADDY_IMAGE\" \"\$CADDY_ARGS\" | sha256sum | cut -c1-12)
+          CADDY_CURRENT=\$(sudo docker inspect caddy --format '{{index .Config.Labels \"miner.caddy.spec\"}}' 2>/dev/null || echo '')
+          if [ \"\$CADDY_CURRENT\" != \"\$CADDY_SPEC\" ]; then
+            echo \"caddy 스펙 변경 (현재=\$CADDY_CURRENT desired=\$CADDY_SPEC) — 재생성\"
             sudo docker rm -f caddy 2>/dev/null || true
-          fi
-          if ! sudo docker ps -a --format '{{.Names}}' | grep -q '^caddy\$'; then
-            sudo docker run -d --name caddy --restart unless-stopped --dns 8.8.8.8 --dns 1.1.1.1 --network proxy_net -p 80:80 -p 443:443 -v /etc/caddy/Caddyfile:/etc/caddy/Caddyfile:ro -v /etc/caddy/sites.d:/etc/caddy/sites.d:ro -v caddy_data:/data -v caddy_config:/config caddy:2-alpine
+            sudo docker run -d --name caddy --label \"miner.caddy.spec=\$CADDY_SPEC\" \$CADDY_ARGS \"\$CADDY_IMAGE\"
+          else
+            echo \"caddy 스펙 동일 (\$CADDY_SPEC) — 유지\"
           fi
           printf '%s {\n\treverse_proxy %s:%s\n\tlog {\n\t\toutput stdout\n\t\tformat console\n\t}\n}\n' \"\$RP_DOMAIN\" \"\$CONTAINER_NAME\" \"\$CONTAINER_PORT\" | sudo tee /etc/caddy/sites.d/\"\$PROJECT\".caddy > /dev/null
           "

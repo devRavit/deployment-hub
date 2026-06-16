@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.2.10
+`2026.06.16`
+
+refactor: Caddy 컨테이너 desired-state 관리 (실행 스펙 label 해시 비교)
+
+기존엔 caddy 컨테이너가 `^caddy$` 존재 여부만 체크 → 한 번 생성되면 이미지/DNS/포트/볼륨 등 실행 스펙을 바꿔도 재생성 안 됨 (v0.2.7 의 --dns 가 안 먹은 근본 이유).
+
+- caddy 실행 스펙(이미지 + run 인자 전체)을 한 변수로 정의 → sha256 12자 해시를 `miner.caddy.spec` label 로 컨테이너에 박음.
+- 다음 배포에서 desired 해시와 현재 컨테이너 label 비교 → 다르면(스펙 변경) 또는 없으면 재생성, 같으면 유지.
+- 표준 desired-state 패턴 — 임시방편(특정 인자 grep) 폐기.
+
 ## v0.2.9
 `2026.06.16`
 
