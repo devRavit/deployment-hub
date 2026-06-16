@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.2.11
+`2026.06.16`
+
+fix: health-gated blue-green 무중단 배포 — 신규 부팅 실패 시 기존 유지
+
+기존 `stop→rm→run` 순서는 신규 컨테이너가 부팅 실패하면 멀쩡한 기존까지 사라져 502 다운(miner 0.3.17 사고). 신규를 검증한 뒤에만 기존을 교체하도록 재작성.
+
+- `lightsail.yml`: 신규를 `<name>-new` 로 먼저 띄워 내부 health 통과 확인 후에만 기존 graceful stop(`--time 30`) + rename 승격. 실패 시 `-new` 만 제거하고 기존 유지 → 무중단 보장.
+- `:latest` only 실행 → `client_payload.version` 태그 우선. latest 만 쓰면 롤백/특정 버전 재배포가 항상 최신을 띄워 무력화되던 버그 수정.
+- `rollback.yml`: reverse_proxy 모드 미지원(`--network proxy_net` 누락)으로 Caddy 연결 안 되던 버그 수정 + 동일 health-gated 교체 적용.
+- swap 2GB idempotent 보장(swappiness=10) — blue-green 공존 시 RAM(2GB) burst 흡수로 OOMKill 방지. 평상시 swap 거의 미사용.
+
 ## v0.2.10
 `2026.06.16`
 
