@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.2.7
+`2026.06.16`
+
+fix: Caddy 컨테이너 DNS 미설정 — ACME 인증서 발급 실패로 443 미listen 해결
+
+진단 결과 (debug-instance.yml): Caddy 컨테이너는 정상 기동했으나 호스트 systemd-resolved stub(127.0.0.53)을 컨테이너에서 접근 못 해 ACME(Let's Encrypt/ZeroSSL) DNS 해석 실패 → 인증서 미발급 → TLS 핸들러 미준비 → 80/443 connection refused.
+
+- caddy `docker run` 에 `--dns 8.8.8.8 --dns 1.1.1.1` 추가 — 공용 resolver 로 ACME 도메인 해석.
+- 기존 컨테이너가 --dns 없이 떠 있으면 (HostConfig.Dns 가 빈 배열) 강제 재생성.
+- 진단용 `debug-instance.yml` 제거 (원인 파악 완료).
+
 ## v0.2.6
 `2026.06.16`
 

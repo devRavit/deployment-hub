@@ -221,8 +221,15 @@ jobs:
             printf '{\n\temail %s\n}\nimport /etc/caddy/sites.d/*.caddy\n' \"\$RP_EMAIL\" | sudo tee /etc/caddy/Caddyfile > /dev/null
           fi
           sudo docker network create proxy_net 2>/dev/null || true
+          # Caddy 는 --dns 명시 필수 — 호스트의 systemd-resolved stub(127.0.0.53)은 컨테이너에서 접근
+          # 불가해 ACME(Let's Encrypt) DNS 해석 실패 → 인증서 미발급 → 443 미listen. 공용 resolver 지정.
+          # 기존 컨테이너가 --dns 없이 떠 있으면(DNS 깨짐) 강제 재생성.
+          CADDY_HAS_DNS=\$(sudo docker inspect caddy --format '{{.HostConfig.Dns}}' 2>/dev/null || echo '[]')
+          if sudo docker ps -a --format '{{.Names}}' | grep -q '^caddy\$' && [ \"\$CADDY_HAS_DNS\" = '[]' ]; then
+            sudo docker rm -f caddy 2>/dev/null || true
+          fi
           if ! sudo docker ps -a --format '{{.Names}}' | grep -q '^caddy\$'; then
-            sudo docker run -d --name caddy --restart unless-stopped --network proxy_net -p 80:80 -p 443:443 -v /etc/caddy/Caddyfile:/etc/caddy/Caddyfile:ro -v /etc/caddy/sites.d:/etc/caddy/sites.d:ro -v caddy_data:/data -v caddy_config:/config caddy:2-alpine
+            sudo docker run -d --name caddy --restart unless-stopped --dns 8.8.8.8 --dns 1.1.1.1 --network proxy_net -p 80:80 -p 443:443 -v /etc/caddy/Caddyfile:/etc/caddy/Caddyfile:ro -v /etc/caddy/sites.d:/etc/caddy/sites.d:ro -v caddy_data:/data -v caddy_config:/config caddy:2-alpine
           fi
           printf '%s {\n\treverse_proxy %s:%s\n\tlog {\n\t\toutput stdout\n\t\tformat console\n\t}\n}\n' \"\$RP_DOMAIN\" \"\$CONTAINER_NAME\" \"\$CONTAINER_PORT\" | sudo tee /etc/caddy/sites.d/\"\$PROJECT\".caddy > /dev/null
           "
