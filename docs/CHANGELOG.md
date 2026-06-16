@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.2.6
+`2026.06.16`
+
+chore: 일회성 인스턴스 진단 워크플로우 (debug-instance.yml)
+
+reverse_proxy Caddy 부트스트랩 후에도 80/443 connection refused 가 지속돼, 인스턴스의 docker ps / caddy logs / Caddyfile / sites.d / listening ports 를 한 번에 출력하는 `workflow_dispatch` 진단 워크플로우 추가. 원인 파악 후 제거 예정.
+
 ## v0.2.5
 `2026.06.16`
 
