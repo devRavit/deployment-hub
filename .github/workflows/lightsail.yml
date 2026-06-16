@@ -206,47 +206,31 @@ jobs:
             exit 1
           fi
 
-          ssh ubuntu@"$IP" RP_EMAIL="$RP_EMAIL" PROJECT="$PROJECT" RP_DOMAIN="$RP_DOMAIN" \
-              CONTAINER_NAME="$CONTAINER_NAME" CONTAINER_PORT="$CONTAINER_PORT" bash -s <<'REMOTE'
+          # 원격 부트스트랩 스크립트를 변수로 조립 (중첩 heredoc 회피 — 들여쓰기 종료토큰 함정 제거).
+          # printf 로 Caddyfile / site snippet 생성. 변수는 ssh env 로 전달.
+          REMOTE_SCRIPT='
           set -euo pipefail
-
           sudo mkdir -p /etc/caddy/sites.d
-
-          # 메인 Caddyfile — 없으면 생성. 있으면 email 만 갱신 (acme 계정).
           if [ ! -f /etc/caddy/Caddyfile ]; then
-            sudo tee /etc/caddy/Caddyfile > /dev/null <<MAIN
-          {
-            email ${RP_EMAIL}
-          }
-          import /etc/caddy/sites.d/*.caddy
-          MAIN
+            printf "{\n\temail %s\n}\nimport /etc/caddy/sites.d/*.caddy\n" "$RP_EMAIL" | sudo tee /etc/caddy/Caddyfile > /dev/null
           fi
-
-          # 공유 docker network — Caddy ↔ 프로젝트 컨테이너 통신
           sudo docker network create proxy_net 2>/dev/null || true
-
-          # Caddy 컨테이너 — 호스트당 1개 (idempotent)
-          if ! sudo docker ps -a --format '{{.Names}}' | grep -q '^caddy$'; then
+          if ! sudo docker ps -a --format "{{.Names}}" | grep -q "^caddy$"; then
             sudo docker run -d --name caddy --restart unless-stopped \
-              --network proxy_net \
-              -p 80:80 -p 443:443 \
+              --network proxy_net -p 80:80 -p 443:443 \
               -v /etc/caddy/Caddyfile:/etc/caddy/Caddyfile:ro \
               -v /etc/caddy/sites.d:/etc/caddy/sites.d:ro \
               -v caddy_data:/data -v caddy_config:/config \
               caddy:2-alpine
           fi
-
-          # 프로젝트별 site snippet
-          sudo tee /etc/caddy/sites.d/${PROJECT}.caddy > /dev/null <<SITE
-          ${RP_DOMAIN} {
-            reverse_proxy ${CONTAINER_NAME}:${CONTAINER_PORT}
-            log {
-              output stdout
-              format console
-            }
-          }
-          SITE
-          REMOTE
+          printf "%s {\n\treverse_proxy %s:%s\n\tlog {\n\t\toutput stdout\n\t\tformat console\n\t}\n}\n" \
+            "$RP_DOMAIN" "$CONTAINER_NAME" "$CONTAINER_PORT" \
+            | sudo tee /etc/caddy/sites.d/"$PROJECT".caddy > /dev/null
+          '
+          ssh ubuntu@"$IP" \
+            RP_EMAIL="$RP_EMAIL" PROJECT="$PROJECT" RP_DOMAIN="$RP_DOMAIN" \
+            CONTAINER_NAME="$CONTAINER_NAME" CONTAINER_PORT="$CONTAINER_PORT" \
+            bash -c "$REMOTE_SCRIPT"
 
           # Lightsail firewall 443 OPEN (idempotent)
           aws lightsail open-instance-public-ports \
