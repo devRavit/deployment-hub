@@ -51,6 +51,8 @@ jobs:
           echo "health_interval=$(yq '.lightsail.health_check.interval' $CONFIG)" >> "$GITHUB_OUTPUT"
           echo "health_timeout=$(yq '.lightsail.health_check.timeout' $CONFIG)" >> "$GITHUB_OUTPUT"
           echo "health_retries=$(yq '.lightsail.health_check.retries' $CONFIG)" >> "$GITHUB_OUTPUT"
+          # reverse_proxy 모드 — rollback 도 Caddy(proxy_net) 경유 컨테이너로 띄워야 외부 연결됨.
+          echo "rp_enabled=$(yq '.lightsail.reverse_proxy.enabled // false' $CONFIG)" >> "$GITHUB_OUTPUT"
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v6
@@ -119,7 +121,7 @@ jobs:
           ssh-keyscan -H "$IP" >> ~/.ssh/known_hosts 2>/dev/null
           ssh -o BatchMode=yes ubuntu@"$IP" "echo ok"
 
-      - name: Pull target image and restart container
+      - name: Rollback (health-gated blue-green, zero-downtime)
         if: steps.target.outputs.skip != 'true'
         env:
           IP: ${{ steps.lightsail.outputs.ip }}
@@ -128,47 +130,67 @@ jobs:
           CONTAINER_NAME: ${{ steps.config.outputs.container_name }}
           HOST_PORT: ${{ steps.config.outputs.host_port }}
           CONTAINER_PORT: ${{ steps.config.outputs.container_port }}
-          REGION: ${{ steps.config.outputs.region }}
-        run: |
-          # 기존 /etc/<container>/env 를 그대로 재사용 (rollback 은 env 변경 안 함).
-          # prune 하지 않는다 — 실패 시 :latest 로 원복할 수 있도록 latest 이미지를 보존.
-          ssh ubuntu@"$IP" REGISTRY="$REGISTRY" IMAGE_URI="$IMAGE_URI" CONTAINER_NAME="$CONTAINER_NAME" HOST_PORT="$HOST_PORT" CONTAINER_PORT="$CONTAINER_PORT" REGION="$REGION" bash -s <<'REMOTE'
-          set -euo pipefail
-          aws ecr get-login-password --region "$REGION" | sudo docker login --username AWS --password-stdin "$REGISTRY"
-          sudo docker pull "$IMAGE_URI"
-          sudo docker stop "$CONTAINER_NAME" 2>/dev/null || true
-          sudo docker rm "$CONTAINER_NAME" 2>/dev/null || true
-          sudo docker run -d \
-            --name "$CONTAINER_NAME" \
-            --restart unless-stopped \
-            --env-file /etc/"$CONTAINER_NAME"/env \
-            -v /home/ubuntu/.aws:/root/.aws:ro \
-            -p "$HOST_PORT":"$CONTAINER_PORT" \
-            "$IMAGE_URI"
-          REMOTE
-
-      - name: Wait for health check
-        if: steps.target.outputs.skip != 'true'
-        env:
-          IP: ${{ steps.lightsail.outputs.ip }}
-          HOST_PORT: ${{ steps.config.outputs.host_port }}
           HEALTH_PATH: ${{ steps.config.outputs.health_path }}
           INTERVAL: ${{ steps.config.outputs.health_interval }}
-          TIMEOUT: ${{ steps.config.outputs.health_timeout }}
           RETRIES: ${{ steps.config.outputs.health_retries }}
+          REGION: ${{ steps.config.outputs.region }}
+          RP_ENABLED: ${{ steps.config.outputs.rp_enabled }}
         run: |
+          # 기존 /etc/<container>/env 재사용 (rollback 은 env 변경 안 함).
+          # prune 하지 않는다 — 실패 시 :latest 로 원복할 수 있도록 latest 이미지 보존.
+          # lightsail.yml 과 동일한 health-gated 교체: 타깃을 -new 로 띄워 검증 후 교체.
+          ssh ubuntu@"$IP" REGISTRY="$REGISTRY" IMAGE_URI="$IMAGE_URI" CONTAINER_NAME="$CONTAINER_NAME" \
+              HOST_PORT="$HOST_PORT" CONTAINER_PORT="$CONTAINER_PORT" HEALTH_PATH="$HEALTH_PATH" \
+              INTERVAL="$INTERVAL" RETRIES="$RETRIES" REGION="$REGION" RP_ENABLED="$RP_ENABLED" bash -s <<'REMOTE'
+          set -euo pipefail
+          NEW="${CONTAINER_NAME}-new"
           ATTEMPTS=$((RETRIES * 6))
+          STOP_TIMEOUT=30
+
+          aws ecr get-login-password --region "$REGION" | sudo docker login --username AWS --password-stdin "$REGISTRY"
+          sudo docker pull "$IMAGE_URI"
+          sudo docker rm -f "$NEW" 2>/dev/null || true
+
+          if [ "$RP_ENABLED" = "true" ]; then
+            sudo docker run -d --name "$NEW" --restart unless-stopped --network proxy_net \
+              --env-file /etc/"$CONTAINER_NAME"/env -v /home/ubuntu/.aws:/root/.aws:ro \
+              --expose "$CONTAINER_PORT" "$IMAGE_URI"
+          else
+            TMP_PORT=$((HOST_PORT + 20000))
+            sudo docker run -d --name "$NEW" --restart unless-stopped \
+              --env-file /etc/"$CONTAINER_NAME"/env -v /home/ubuntu/.aws:/root/.aws:ro \
+              -p "$TMP_PORT":"$CONTAINER_PORT" "$IMAGE_URI"
+          fi
+
+          healthy=false
           for i in $(seq 1 "$ATTEMPTS"); do
-            STATUS=$(ssh ubuntu@"$IP" "curl -s -o /dev/null -w '%{http_code}' --max-time $TIMEOUT http://localhost:${HOST_PORT}${HEALTH_PATH} || echo 000")
-            if [ "$STATUS" = "200" ]; then
-              echo "Rollback health check passed (HTTP $STATUS)"
-              exit 0
-            fi
+            STATUS=$(sudo docker exec "$NEW" sh -c "wget -q -O /dev/null -S http://localhost:${CONTAINER_PORT}${HEALTH_PATH} 2>&1 | awk '/HTTP/{print \$2}' | tail -1" 2>/dev/null || echo 000)
+            if [ "$STATUS" = "200" ]; then echo "Rollback target healthy (attempt $i)"; healthy=true; break; fi
             echo "Attempt $i/$ATTEMPTS: HTTP $STATUS — retrying in ${INTERVAL}s"
             sleep "$INTERVAL"
           done
-          echo "::error::Rollback health check failed after $ATTEMPTS attempts"
-          exit 1
+
+          if [ "$healthy" != "true" ]; then
+            echo "::error::Rollback target failed health check — keeping existing container"
+            sudo docker logs --tail 50 "$NEW" 2>&1 || true
+            sudo docker rm -f "$NEW" 2>/dev/null || true
+            exit 1
+          fi
+
+          sudo docker stop --time "$STOP_TIMEOUT" "$CONTAINER_NAME" 2>/dev/null || true
+          sudo docker rm "$CONTAINER_NAME" 2>/dev/null || true
+          if [ "$RP_ENABLED" = "true" ]; then
+            sudo docker rename "$NEW" "$CONTAINER_NAME"
+            sudo docker exec caddy caddy reload --config /etc/caddy/Caddyfile 2>/dev/null || \
+              sudo docker restart caddy
+          else
+            sudo docker rm -f "$NEW" 2>/dev/null || true
+            sudo docker run -d --name "$CONTAINER_NAME" --restart unless-stopped \
+              --env-file /etc/"$CONTAINER_NAME"/env -v /home/ubuntu/.aws:/root/.aws:ro \
+              -p "$HOST_PORT":"$CONTAINER_PORT" "$IMAGE_URI"
+          fi
+          echo "Rollback complete — $CONTAINER_NAME now running $IMAGE_URI"
+          REMOTE
 
       - name: Restore latest on rollback failure
         if: failure() && steps.target.outputs.skip != 'true'

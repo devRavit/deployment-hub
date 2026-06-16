@@ -131,11 +131,18 @@ jobs:
         env:
           PROJECT: ${{ steps.validate.outputs.project }}
           REGION: ${{ steps.config.outputs.region }}
+          VERSION: ${{ github.event.client_payload.version }}
         run: |
           ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-          IMAGE_URI="${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com/${PROJECT}:latest"
           REGISTRY="${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com"
-          echo "image_uri=$IMAGE_URI" >> $GITHUB_OUTPUT
+          # 실행 태그는 명시 버전 우선 — latest 만 쓰면 롤백/재배포 시 항상 최신을 띄워
+          # 특정 버전으로 되돌릴 수 없다. version 누락 시에만 latest fallback.
+          if [ -n "$VERSION" ] && [ "$VERSION" != "null" ]; then
+            IMAGE_TAG="$VERSION"
+          else
+            IMAGE_TAG="latest"
+          fi
+          echo "image_uri=${REGISTRY}/${PROJECT}:${IMAGE_TAG}" >> $GITHUB_OUTPUT
           echo "registry=$REGISTRY" >> $GITHUB_OUTPUT
 
       - name: Resolve static env block
@@ -177,6 +184,42 @@ jobs:
           chmod 600 ~/.ssh/id_rsa
           ssh-keyscan -H "$IP" >> ~/.ssh/known_hosts 2>/dev/null
           ssh -o BatchMode=yes ubuntu@"$IP" "echo ok"
+
+      - name: Ensure swap (blue-green 공존 burst 흡수)
+        env:
+          IP: ${{ steps.lightsail.outputs.ip }}
+        run: |
+          # blue-green 배포 중 구·신 컨테이너가 잠깐 공존하면 RAM(2GB)을 초과할 수 있다.
+          # swap 으로 그 순간의 burst 를 흡수해 OOMKill 방지. idempotent + 영구(fstab) +
+          # swappiness=10 으로 평상시엔 거의 swap 안 씀(성능 영향 최소, burst 때만 사용).
+          ssh ubuntu@"$IP" bash -s <<'REMOTE'
+          set -euo pipefail
+          SWAPFILE=/swapfile
+          SWAP_SIZE_MB=2048
+          if ! sudo swapon --show | grep -q "$SWAPFILE"; then
+            if [ ! -f "$SWAPFILE" ]; then
+              echo "swap 파일 생성 (${SWAP_SIZE_MB}MB)"
+              sudo fallocate -l "${SWAP_SIZE_MB}M" "$SWAPFILE" 2>/dev/null || \
+                sudo dd if=/dev/zero of="$SWAPFILE" bs=1M count="$SWAP_SIZE_MB"
+              sudo chmod 600 "$SWAPFILE"
+              sudo mkswap "$SWAPFILE"
+            fi
+            sudo swapon "$SWAPFILE"
+            echo "swap 활성화됨"
+          else
+            echo "swap 이미 활성 — skip"
+          fi
+          # 재부팅 후 유지
+          if ! grep -q "$SWAPFILE" /etc/fstab; then
+            echo "$SWAPFILE none swap sw 0 0" | sudo tee -a /etc/fstab > /dev/null
+          fi
+          # 평상시 swap 회피 (burst 때만)
+          sudo sysctl -w vm.swappiness=10 > /dev/null
+          if ! grep -q "vm.swappiness" /etc/sysctl.conf; then
+            echo "vm.swappiness=10" | sudo tee -a /etc/sysctl.conf > /dev/null
+          fi
+          free -h
+          REMOTE
 
       - name: Write env file to instance
         env:
@@ -247,7 +290,7 @@ jobs:
             --region "$REGION" \
             --port-info fromPort=443,toPort=443,protocol=TCP 2>/dev/null || true
 
-      - name: Pull image and restart container
+      - name: Deploy (health-gated blue-green, zero-downtime)
         env:
           IP: ${{ steps.lightsail.outputs.ip }}
           REGISTRY: ${{ steps.ecr.outputs.registry }}
@@ -255,34 +298,87 @@ jobs:
           CONTAINER_NAME: ${{ steps.config.outputs.container_name }}
           HOST_PORT: ${{ steps.config.outputs.host_port }}
           CONTAINER_PORT: ${{ steps.config.outputs.container_port }}
+          HEALTH_PATH: ${{ steps.config.outputs.health_path }}
+          INTERVAL: ${{ steps.config.outputs.health_interval }}
+          RETRIES: ${{ steps.config.outputs.health_retries }}
           REGION: ${{ steps.config.outputs.region }}
           RP_ENABLED: ${{ steps.config.outputs.rp_enabled }}
         run: |
           ssh ubuntu@"$IP" REGISTRY="$REGISTRY" IMAGE_URI="$IMAGE_URI" CONTAINER_NAME="$CONTAINER_NAME" \
-              HOST_PORT="$HOST_PORT" CONTAINER_PORT="$CONTAINER_PORT" REGION="$REGION" RP_ENABLED="$RP_ENABLED" bash -s <<'REMOTE'
+              HOST_PORT="$HOST_PORT" CONTAINER_PORT="$CONTAINER_PORT" HEALTH_PATH="$HEALTH_PATH" \
+              INTERVAL="$INTERVAL" RETRIES="$RETRIES" REGION="$REGION" RP_ENABLED="$RP_ENABLED" bash -s <<'REMOTE'
           set -euo pipefail
+
+          NEW="${CONTAINER_NAME}-new"
+          ATTEMPTS=$((RETRIES * 6))
+          STOP_TIMEOUT=30   # graceful stop: SIGTERM 후 이 시간까지 대기, 초과 시 SIGKILL
+
           aws ecr get-login-password --region "$REGION" | sudo docker login --username AWS --password-stdin "$REGISTRY"
           sudo docker pull "$IMAGE_URI"
-          sudo docker stop "$CONTAINER_NAME" 2>/dev/null || true
-          sudo docker rm "$CONTAINER_NAME" 2>/dev/null || true
 
-          # /home/ubuntu/.aws 를 컨테이너에 read-only로 마운트 → Spring Cloud AWS가
-          # Secrets Manager (production/$CONTAINER_NAME) 를 직접 호출.
-          # reverse_proxy 모드: 컨테이너는 proxy_net 참여 + host 포트 노출 X (Caddy가 외부 종단).
-          # 기본 모드: host_port:container_port 직접 노출 (이전 동작 유지).
+          # 이전 배포 실패로 남은 -new 잔재 정리 (있으면)
+          sudo docker rm -f "$NEW" 2>/dev/null || true
+
+          # 1) 새 컨테이너를 -new 로 기동 — 기존 $CONTAINER_NAME 은 그대로 트래픽 받는 중.
+          #    /home/ubuntu/.aws ro 마운트 → Spring Cloud AWS 가 Secrets Manager 직접 호출.
           if [ "$RP_ENABLED" = "true" ]; then
+            # reverse_proxy: -new 는 proxy_net 참여, host 포트 미노출 (Caddy 가 외부 종단).
             sudo docker run -d \
-              --name "$CONTAINER_NAME" \
+              --name "$NEW" \
               --restart unless-stopped \
               --network proxy_net \
               --env-file /etc/"$CONTAINER_NAME"/env \
               -v /home/ubuntu/.aws:/root/.aws:ro \
               --expose "$CONTAINER_PORT" \
               "$IMAGE_URI"
-            # Caddy reload — site snippet 변경 반영
+          else
+            # 기본 모드: 기존이 host_port 를 점유 중이므로 -new 는 임시 포트로 띄워 검증.
+            #            host 포트 충돌 없이 health 확인 후 정식 포트로 교체.
+            TMP_PORT=$((HOST_PORT + 20000))
+            sudo docker run -d \
+              --name "$NEW" \
+              --restart unless-stopped \
+              --env-file /etc/"$CONTAINER_NAME"/env \
+              -v /home/ubuntu/.aws:/root/.aws:ro \
+              -p "$TMP_PORT":"$CONTAINER_PORT" \
+              "$IMAGE_URI"
+          fi
+
+          # 2) -new 내부 health 폴링. 실패 시 -new 만 제거하고 기존 유지 → 무중단 보장.
+          healthy=false
+          for i in $(seq 1 "$ATTEMPTS"); do
+            STATUS=$(sudo docker exec "$NEW" sh -c "wget -q -O /dev/null -S http://localhost:${CONTAINER_PORT}${HEALTH_PATH} 2>&1 | awk '/HTTP/{print \$2}' | tail -1" 2>/dev/null || echo 000)
+            if [ "$STATUS" = "200" ]; then
+              echo "New container healthy (HTTP 200) on attempt $i/$ATTEMPTS"
+              healthy=true
+              break
+            fi
+            echo "Attempt $i/$ATTEMPTS: new container HTTP $STATUS — retrying in ${INTERVAL}s"
+            sleep "$INTERVAL"
+          done
+
+          if [ "$healthy" != "true" ]; then
+            echo "::error::New container failed health check — keeping existing container, aborting deploy"
+            echo "--- new container logs (tail) ---"
+            sudo docker logs --tail 50 "$NEW" 2>&1 || true
+            sudo docker rm -f "$NEW" 2>/dev/null || true
+            exit 1
+          fi
+
+          # 3) 교체 — 기존을 graceful stop 후, -new 를 정식 이름으로 승격.
+          sudo docker stop --time "$STOP_TIMEOUT" "$CONTAINER_NAME" 2>/dev/null || true
+          sudo docker rm "$CONTAINER_NAME" 2>/dev/null || true
+
+          if [ "$RP_ENABLED" = "true" ]; then
+            # 이름만 정식으로 변경 — proxy_net/spec 동일하므로 rename 으로 충분.
+            sudo docker rename "$NEW" "$CONTAINER_NAME"
+            # Caddy 가 컨테이너명→IP 를 재해석하도록 reload (rename 으로 IP 가 바뀜).
             sudo docker exec caddy caddy reload --config /etc/caddy/Caddyfile 2>/dev/null || \
               sudo docker restart caddy
           else
+            # 기본 모드: 임시 포트로 검증된 -new 를 정식 포트로 재기동 (포트 변경은 rename 불가).
+            # 같은 이미지/env 라 검증된 것과 동일하지만, 정식 포트 기동분도 health 한 번 재확인.
+            sudo docker rm -f "$NEW" 2>/dev/null || true
             sudo docker run -d \
               --name "$CONTAINER_NAME" \
               --restart unless-stopped \
@@ -290,41 +386,22 @@ jobs:
               -v /home/ubuntu/.aws:/root/.aws:ro \
               -p "$HOST_PORT":"$CONTAINER_PORT" \
               "$IMAGE_URI"
+            promoted=false
+            for i in $(seq 1 "$ATTEMPTS"); do
+              STATUS=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://localhost:${HOST_PORT}${HEALTH_PATH}" 2>/dev/null || echo 000)
+              if [ "$STATUS" = "200" ]; then promoted=true; break; fi
+              sleep "$INTERVAL"
+            done
+            if [ "$promoted" != "true" ]; then
+              echo "::error::Promoted container failed health check on host port"
+              sudo docker logs --tail 50 "$CONTAINER_NAME" 2>&1 || true
+              exit 1
+            fi
           fi
 
           sudo docker image prune -af
+          echo "Deploy complete — $CONTAINER_NAME now running $IMAGE_URI"
           REMOTE
-
-      - name: Wait for health check
-        env:
-          IP: ${{ steps.lightsail.outputs.ip }}
-          HOST_PORT: ${{ steps.config.outputs.host_port }}
-          CONTAINER_NAME: ${{ steps.config.outputs.container_name }}
-          CONTAINER_PORT: ${{ steps.config.outputs.container_port }}
-          HEALTH_PATH: ${{ steps.config.outputs.health_path }}
-          INTERVAL: ${{ steps.config.outputs.health_interval }}
-          TIMEOUT: ${{ steps.config.outputs.health_timeout }}
-          RETRIES: ${{ steps.config.outputs.health_retries }}
-          RP_ENABLED: ${{ steps.config.outputs.rp_enabled }}
-        run: |
-          # 기본: 인스턴스 localhost:HOST_PORT 폴링.
-          # reverse_proxy 모드: host 포트 없으므로 컨테이너 내부에서 직접 폴링.
-          ATTEMPTS=$((RETRIES * 6))
-          for i in $(seq 1 "$ATTEMPTS"); do
-            if [ "$RP_ENABLED" = "true" ]; then
-              STATUS=$(ssh ubuntu@"$IP" "sudo docker exec ${CONTAINER_NAME} sh -c 'wget -q -O /dev/null -S http://localhost:${CONTAINER_PORT}${HEALTH_PATH} 2>&1 | awk \"/HTTP/{print \\\$2}\" | tail -1' 2>/dev/null || echo 000")
-            else
-              STATUS=$(ssh ubuntu@"$IP" "curl -s -o /dev/null -w '%{http_code}' --max-time $TIMEOUT http://localhost:${HOST_PORT}${HEALTH_PATH} || echo 000")
-            fi
-            if [ "$STATUS" = "200" ]; then
-              echo "Health check passed (HTTP $STATUS)"
-              exit 0
-            fi
-            echo "Attempt $i/$ATTEMPTS: HTTP $STATUS — retrying in ${INTERVAL}s"
-            sleep "$INTERVAL"
-          done
-          echo "::error::Health check failed after $ATTEMPTS attempts"
-          exit 1
 
       - name: Set Deployment Success
         if: success()
