@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.2.9
+`2026.06.16`
+
+fix: Caddy --dns 재생성 조건 수정 + debug 워크플로 제거
+
+docker inspect HostConfig.Dns 가 빈 경우 `<no value>` 반환이라 `= []` 비교가 안 먹어 기존 DNS 없는 caddy 가 재생성 안 됨(6h 유지). 8.8.8.8 grep 포함 여부로 감지하도록 변경. 진단(debug-instance.yml)으로 caddy resolv.conf=127.0.0.53 + nslookup refused + NO 80/443 LISTENER 확인 완료, 진단 제거.
+
 ## v0.2.8
 `2026.06.16`
 

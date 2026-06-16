@@ -223,9 +223,11 @@ jobs:
           sudo docker network create proxy_net 2>/dev/null || true
           # Caddy 는 --dns 명시 필수 — 호스트의 systemd-resolved stub(127.0.0.53)은 컨테이너에서 접근
           # 불가해 ACME(Let's Encrypt) DNS 해석 실패 → 인증서 미발급 → 443 미listen. 공용 resolver 지정.
-          # 기존 컨테이너가 --dns 없이 떠 있으면(DNS 깨짐) 강제 재생성.
-          CADDY_HAS_DNS=\$(sudo docker inspect caddy --format '{{.HostConfig.Dns}}' 2>/dev/null || echo '[]')
-          if sudo docker ps -a --format '{{.Names}}' | grep -q '^caddy\$' && [ \"\$CADDY_HAS_DNS\" = '[]' ]; then
+          # 기존 컨테이너의 --dns 적용 여부를 8.8.8.8 포함으로 감지 (빈 경우 inspect 가 '<no value>' 라
+          # '[]' 비교가 안 먹음). 미적용이면 강제 재생성.
+          CADDY_DNS=\$(sudo docker inspect caddy --format '{{.HostConfig.Dns}}' 2>/dev/null || echo '')
+          if sudo docker ps -a --format '{{.Names}}' | grep -q '^caddy\$' && ! echo \"\$CADDY_DNS\" | grep -q '8.8.8.8'; then
+            echo 'caddy 에 --dns 미적용 — 재생성'
             sudo docker rm -f caddy 2>/dev/null || true
           fi
           if ! sudo docker ps -a --format '{{.Names}}' | grep -q '^caddy\$'; then
