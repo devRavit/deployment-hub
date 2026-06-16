@@ -1,0 +1,41 @@
+name: Debug Instance
+on:
+  workflow_dispatch:
+    inputs:
+      instance:
+        default: miner
+jobs:
+  debug:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ap-northeast-2
+      - name: Get IP
+        id: ip
+        run: echo "ip=$(aws lightsail get-instance --instance-name ${{ inputs.instance }} --query 'instance.publicIpAddress' --output text)" >> $GITHUB_OUTPUT
+      - name: Setup SSH
+        env:
+          SSH_KEY: ${{ secrets.LIGHTSAIL_SSH_KEY }}
+          IP: ${{ steps.ip.outputs.ip }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$SSH_KEY" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H "$IP" >> ~/.ssh/known_hosts 2>/dev/null
+      - name: Diagnose
+        env:
+          IP: ${{ steps.ip.outputs.ip }}
+        run: |
+          echo "=== docker ps -a ==="
+          ssh ubuntu@"$IP" "sudo docker ps -a --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'"
+          echo "=== caddy logs ==="
+          ssh ubuntu@"$IP" "sudo docker logs caddy --tail 40 2>&1 || echo 'no caddy container'"
+          echo "=== Caddyfile ==="
+          ssh ubuntu@"$IP" "sudo cat /etc/caddy/Caddyfile 2>/dev/null || echo 'no Caddyfile'"
+          echo "=== sites.d ==="
+          ssh ubuntu@"$IP" "sudo ls -la /etc/caddy/sites.d/ 2>/dev/null && sudo cat /etc/caddy/sites.d/*.caddy 2>/dev/null || echo 'no sites'"
+          echo "=== listening ports ==="
+          ssh ubuntu@"$IP" "sudo ss -tlnp | grep -E ':80|:443|:8080' || echo 'none'"
