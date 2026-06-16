@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.2.5
+`2026.06.16`
+
+fix: Caddy 부트스트랩 SSH env 미전달 — `bash -c` → stdin `bash -s` + export 인라인
+
+v0.2.4 의 heredoc 수정 후에도 `ssh host VAR=val bash -c "$SCRIPT"` 형식에서 `RP_DOMAIN: unbound variable` 로 실패. `ssh host VAR=val bash -c "..."` 는 OpenSSH 가 VAR 를 원격 명령의 환경변수로 안 붙임 (bash -s stdin 패턴과 달리). `set -u` 가 unbound 로 즉시 중단.
+
+- 변수를 로컬 GitHub Actions env 확장으로 `export VAR='...'` 인라인해 스크립트 앞에 prepend.
+- `printf '%s\n' "$REMOTE_SCRIPT" | ssh ubuntu@IP bash -s` (stdin 전달) — Pull image step 과 동일 패턴.
+
 ## v0.2.4
 `2026.06.16`
 
