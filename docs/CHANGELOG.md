@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.2.4
+`2026.06.16`
+
+fix: Caddy 부트스트랩 중첩 heredoc 버그 — Caddy 컨테이너 미기동으로 80/443 죽던 문제
+
+`lightsail.yml` 의 Caddy 부트스트랩 step 이 `ssh ... bash -s <<'REMOTE'` 안에 `<<MAIN` / `<<SITE` 중첩 heredoc 을 들여쓰기와 함께 둬, 종료 토큰(`MAIN`/`SITE`)이 줄 시작이 아니라 인식 안 됨 → heredoc 미종료 → 스크립트 깨짐 → Caddy 컨테이너 미기동. workflow 의 health check 는 컨테이너 내부(8080)로 폴링해 통과했지만 외부 80/443 은 listen 0.
+
+- 중첩 heredoc 제거 → `REMOTE_SCRIPT` 변수 + `printf` 로 Caddyfile / site snippet 생성.
+- `<<'REMOTE'` quoted heredoc 의 변수 미보간 문제도 해소 — `ssh ... bash -c "$REMOTE_SCRIPT"` 로 env 전달.
+
 ## v0.2.3
 `2026.06.16`
 
