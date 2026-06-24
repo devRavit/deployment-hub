@@ -13,12 +13,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout deployment-hub
-        uses: actions/checkout@v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
       - name: Validate project
         id: validate
+        env:
+          PROJECT: ${{ github.event.client_payload.project }}
         run: |
-          PROJECT="${{ github.event.client_payload.project }}"
           CONFIG="projects/${PROJECT}.yml"
 
           if [ ! -f "$CONFIG" ]; then
@@ -65,24 +66,27 @@ jobs:
 
       - name: Create GitHub Deployment
         id: deployment
-        uses: actions/github-script@v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+        env:
+          SHA: ${{ github.event.client_payload.sha }}
+          VERSION: ${{ github.event.client_payload.version }}
         with:
           github-token: ${{ secrets.PAT }}
           script: |
             const deployment = await github.rest.repos.createDeployment({
               owner: '${{ github.repository_owner }}',
               repo: '${{ steps.validate.outputs.project }}',
-              ref: '${{ github.event.client_payload.sha }}',
+              ref: process.env.SHA,
               environment: 'production',
               auto_merge: false,
               required_contexts: [],
-              description: 'Deploy v${{ github.event.client_payload.version }} to AWS Lightsail'
+              description: `Deploy v${process.env.VERSION} to AWS Lightsail`
             });
             return deployment.data.id;
           result-encoding: string
 
       - name: Set Deployment In Progress
-        uses: actions/github-script@v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         with:
           github-token: ${{ secrets.PAT }}
           script: |
@@ -95,7 +99,7 @@ jobs:
             });
 
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v6
+        uses: aws-actions/configure-aws-credentials@e7f100cf4c008499ea8adda475de1042d6975c7b # v6
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
@@ -405,7 +409,9 @@ jobs:
 
       - name: Set Deployment Success
         if: success()
-        uses: actions/github-script@v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+        env:
+          VERSION: ${{ github.event.client_payload.version }}
         with:
           github-token: ${{ secrets.PAT }}
           script: |
@@ -414,12 +420,12 @@ jobs:
               repo: '${{ steps.validate.outputs.project }}',
               deployment_id: ${{ steps.deployment.outputs.result }},
               state: 'success',
-              description: 'Deployed v${{ github.event.client_payload.version }} to production'
+              description: `Deployed v${process.env.VERSION} to production`
             });
 
       - name: Set Deployment Failure
         if: failure()
-        uses: actions/github-script@v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         with:
           github-token: ${{ secrets.PAT }}
           script: |
@@ -433,16 +439,18 @@ jobs:
 
       - name: Create GitHub Release
         if: success()
-        uses: actions/github-script@v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         env:
           CHANGELOG: ${{ github.event.client_payload.changelog }}
+          VERSION: ${{ github.event.client_payload.version }}
+          SHA: ${{ github.event.client_payload.sha }}
         with:
           github-token: ${{ secrets.PAT }}
           script: |
-            const version = '${{ github.event.client_payload.version }}';
+            const version = process.env.VERSION;
             const tagName = `v${version}`;
             const project = '${{ steps.validate.outputs.project }}';
-            const sha = '${{ github.event.client_payload.sha }}';
+            const sha = process.env.SHA;
 
             try {
               await github.rest.git.getRef({
