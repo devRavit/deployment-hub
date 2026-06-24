@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.2.12
+`2026.06.24`
+
+security: 워크플로 하드닝 — 서드파티 액션 SHA 고정 + client_payload injection 차단
+
+3관점(AppSec·인프라·레드팀) 보안 검증에서 식별된 GitHub Actions 취약점을 차단한다. 동작 변경 없음(보안 강화만, 같은 액션 버전·같은 배포 결과).
+
+- **액션 SHA 고정**: `actions/checkout@v6`·`github-script@v9`·`upload-artifact@v7`·`aws-actions/configure-aws-credentials@v6`·`BigWigsMods/packager@v2` 를 전부 commit SHA 로 핀(버전은 주석 표기). 가변 태그 공급망 위험 제거 — 특히 `packager` 는 AWS·CurseForge·PAT secrets 가 주입된 컨텍스트에서 실행돼 액션 침해 시 전량 유출 가능했다.
+- **client_payload script injection 차단**: apprunner·lightsail·curseforge·rollback 의 `run:`/`github-script` 에 `${{ github.event.client_payload.* }}`·`${{ inputs.* }}` 를 직접 보간하던 것을 `env:` 변수 우회(`"$VAR"`·`process.env.X`)로 변경. PAT 유출·dispatch 발신 repo 침해 시 prod 인스턴스 RCE 로 직결되던 셸/JS 주입 경로 차단.
+- 신뢰 컨텍스트(`github.repository_owner`·검증된 `steps.*.outputs`)와 concurrency group 표현식은 셸/JS 실행이 아니라 그대로 유지.
+
 ## v0.2.11
 `2026.06.16`
 
