@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.2.13
+`2026.07.13`
+
+feat(miner): 단타 시장 US 개방 — MINER_DAYTRADE_MARKETS=KR,US
+
+miner 단타 트랙 대상 시장 ENV opt-in(코드 배선은 miner v1.303.0 완료, 기본 KR 불변) — 사용자 지시로 미장 정규장 창(22:30~05:00 KST)에 US 발굴·진입 스케줄러 활성화. projects/miner.yml env 1키 추가(파이프라인·시크릿 무변경).
+
 ## v0.2.12
 `2026.06.24`
 
