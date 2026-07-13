@@ -27,6 +27,8 @@ lightsail:
   env:
     SPRING_PROFILES_ACTIVE: production
     JAVA_TOOL_OPTIONS: "-Xmx1024m -XX:+UseG1GC"
+    # 단타 트랙 대상 시장(#1181, 2026-07-13 사용자 지시로 US 개방) — 발굴·진입 스케줄러가 US 정규장(22:30~05:00 KST)에도 발화.
+    MINER_DAYTRADE_MARKETS: "KR,US"
 
   # 인스턴스당 공유 Caddy 가 자동 부트스트랩. Caddyfile snippet 은 sites.d/miner.caddy.
   # Let's Encrypt HTTP-01 challenge 로 인증서 발급 → 60일마다 자동 갱신.
