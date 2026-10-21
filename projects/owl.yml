@@ -1,0 +1,32 @@
+name: owl
+type: lightsail
+region: ap-northeast-2
+
+aws:
+  secrets_manager_id: production/owl
+
+ecr:
+  lifecycle:
+    keep_count: 2
+
+lightsail:
+  instance_name: owl
+  container_name: owl
+  # Caddy reverse proxy 뒤 — 외부는 https://owl.ravit.run (443) → Caddy → owl:8080
+  host_port: 8080
+  container_port: 8080
+  health_check:
+    path: /health
+    interval: 10
+    timeout: 5
+    retries: 3
+  env:
+    SPRING_PROFILES_ACTIVE: production
+    JAVA_TOOL_OPTIONS: "-Xmx1024m -XX:+UseG1GC"
+
+  reverse_proxy:
+    enabled: true
+    domain: owl.ravit.run
+    tls:
+      provider: letsencrypt
+      email: devravit@gmail.com
