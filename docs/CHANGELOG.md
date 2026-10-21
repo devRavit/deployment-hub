@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.3.0
+`2026.10.21`
+
+feat(owl): owl(LLM 위키 API 서비스) Lightsail 배포 대상 추가
+
+- `projects/owl.yml`: Lightsail 인스턴스 `owl`(ap-northeast-2, small_3_0, Ubuntu 24.04) + Caddy reverse proxy `owl.ravit.run` + ECR 최근 2개 보관. 런타임 시크릿 `production/owl`.
+- 워크플로 변경 없음 — 기존 lightsail 타입·Caddy 사이드카 그대로 재사용.
+
 ## v0.2.13
 `2026.07.13`
 
